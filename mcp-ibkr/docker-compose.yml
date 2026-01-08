@@ -1,0 +1,17 @@
+services:
+  mcp-ibkr:
+    build: .
+    ports:
+      - "${MCP_PORT:-8000}:8000"
+    environment:
+      IBKR_HOST: ${IBKR_HOST:-host.docker.internal}
+      IBKR_PORT: ${IBKR_PORT:-7497}
+      IBKR_CLIENT_ID: ${IBKR_CLIENT_ID:-123}
+      IBKR_ACCOUNT: ${IBKR_ACCOUNT:-}
+      IBKR_TIMEOUT_SECONDS: ${IBKR_TIMEOUT_SECONDS:-10}
+      TZ: ${TZ:-Europe/Madrid}
+      MCP_BIND_HOST: ${MCP_BIND_HOST:-0.0.0.0}
+      MCP_PORT: ${MCP_PORT:-8000}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
