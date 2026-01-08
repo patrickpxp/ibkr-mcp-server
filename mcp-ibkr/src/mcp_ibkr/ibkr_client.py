@@ -100,13 +100,13 @@ class IBKRClient:
         positions = []
         for position in self.ib.positions():
             contract = position.contract
-            exchange = contract.exchange or getattr(contract, "primaryExchange", "")
+            exchange = contract.exchange or getattr(contract, "primaryExchange", "") or "SMART"
             positions.append(
                 PositionSnapshot(
                     symbol=contract.symbol,
                     sec_type=contract.secType,
                     exchange=exchange,
-                    currency=contract.currency,
+                    currency=contract.currency or "BASE",
                     con_id=contract.conId,
                     position=float(position.position),
                     avg_cost=_to_float(position.avgCost),
