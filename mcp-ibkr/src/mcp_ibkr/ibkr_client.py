@@ -115,6 +115,9 @@ class IBKRClient:
             )
         return positions
 
+    def get_managed_accounts(self) -> list[str]:
+        return list(self.ib.managedAccounts())
+
     def get_pnl_best_effort(
         self,
         account: Optional[str],
