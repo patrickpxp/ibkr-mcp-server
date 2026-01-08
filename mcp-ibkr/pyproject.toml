@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools==75.1.0", "wheel==0.44.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mcp-ibkr"
+version = "0.1.0"
+description = "MCP server exposing an IBKR portfolio tool via FastMCP."
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+license = { text = "MIT" }
+authors = [{ name = "IBKR MCP", email = "devnull@example.com" }]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.12",
+  "License :: OSI Approved :: MIT License",
+]
+dependencies = [
+  "fastmcp==2.14.2",
+  "ib_async==2.0.1",
+  "fastapi==0.112.0",
+  "pydantic==2.8.2",
+  "uvicorn==0.30.6",
+]
+
+[project.optional-dependencies]
+test = ["pytest==8.2.2"]
+
+[project.scripts]
+mcp-ibkr = "mcp_ibkr.server:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+packages = ["mcp_ibkr"]
