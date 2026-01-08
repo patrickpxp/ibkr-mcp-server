@@ -1,3 +1,77 @@
 # MCP IBKR Server
 
-Work in progress. See upcoming instructions in later commits.
+A FastMCP-based server that exposes a single tool, `ibkr_get_portfolio`, to fetch IBKR positions and best-effort P&L from a local TWS/IB Gateway instance.
+
+## Requirements
+
+- Docker (and Docker Compose v2)
+- TWS or IB Gateway running on the host with API access enabled
+
+## Configuration
+
+Environment variables (with defaults):
+
+- `IBKR_HOST` (default `host.docker.internal`)
+- `IBKR_PORT` (default `7497`)
+- `IBKR_CLIENT_ID` (default `123`)
+- `IBKR_ACCOUNT` (optional; preferred account if set)
+- `IBKR_TIMEOUT_SECONDS` (default `10`)
+- `MCP_BIND_HOST` (default `0.0.0.0`)
+- `MCP_PORT` (default `8000`)
+- `TZ` (default `Europe/Madrid`)
+
+## Run with Docker Compose
+
+```bash
+docker compose up -d --build
+```
+
+Ensure TWS or IB Gateway has API access enabled and is listening on the configured port.
+
+## Health Check
+
+```bash
+curl http://localhost:${MCP_PORT:-8000}/health
+```
+
+Expected response:
+
+```json
+{"status":"ok"}
+```
+
+## MCP Tool Invocation Example
+
+```bash
+curl -s http://localhost:${MCP_PORT:-8000}/mcp \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"ibkr_get_portfolio","arguments":{}}}'
+```
+
+## Register with Codex
+
+Example (streamable HTTP MCP server):
+
+```bash
+codex mcp add ibkr-portfolio \
+  --transport http \
+  --url http://localhost:${MCP_PORT:-8000}/mcp
+```
+
+Once registered, ask Codex for your IBKR portfolio to invoke the tool.
+
+## Manual Testing
+
+1. Start the server via Docker Compose.
+2. Confirm connectivity with `/health`.
+3. Trigger the MCP tool call using the curl example above.
+
+## Tests
+
+```bash
+python -m pytest -q
+```
+
+## Future: Auth
+
+FastMCP includes built-in OAuth provider integrations. A future iteration can wrap the existing `/mcp` endpoint with FastMCP OAuth configuration (e.g., GitHub or Google) and add token validation middleware before exposing the server publicly. No authentication is implemented yet.
