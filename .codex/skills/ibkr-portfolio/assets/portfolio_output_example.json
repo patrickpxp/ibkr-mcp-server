@@ -1,0 +1,41 @@
+{
+  "as_of": "2026-01-08T18:00:00+01:00",
+  "account": "U1234567",
+  "currency": "BASE",
+  "positions": [
+    {
+      "symbol": "AAPL",
+      "secType": "STK",
+      "exchange": "SMART",
+      "currency": "USD",
+      "conId": 265598,
+      "position": 10,
+      "avgCost": 150.12,
+      "marketPrice": 172.34,
+      "marketValue": 1723.4,
+      "unrealizedPnl": 222.2,
+      "realizedPnl": null
+    },
+    {
+      "symbol": "MSFT",
+      "secType": "STK",
+      "exchange": "SMART",
+      "currency": "USD",
+      "conId": 272093,
+      "position": 5,
+      "avgCost": 300.55,
+      "marketPrice": 318.2,
+      "marketValue": 1591.0,
+      "unrealizedPnl": 88.25,
+      "realizedPnl": null
+    }
+  ],
+  "totals": {
+    "unrealizedPnl": 310.45,
+    "realizedPnl": null,
+    "netLiquidation": 105432.12
+  },
+  "notes": [
+    "realizedPnl not available via current implementation"
+  ]
+}
