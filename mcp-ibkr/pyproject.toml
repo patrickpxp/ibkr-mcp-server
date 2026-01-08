@@ -19,7 +19,7 @@ dependencies = [
   "fastmcp==2.14.2",
   "ib_async==2.0.1",
   "fastapi==0.112.0",
-  "pydantic==2.8.2",
+  "pydantic==2.11.7",
   "uvicorn==0.30.6",
 ]
 
