@@ -18,7 +18,7 @@ mcp = FastMCP("IBKR MCP")
 
 
 def create_app() -> FastAPI:
-    mcp_app = mcp.http_app()
+    mcp_app = mcp.http_app(path="/")
     app = FastAPI(lifespan=mcp_app.lifespan)
 
     @app.get("/health")
