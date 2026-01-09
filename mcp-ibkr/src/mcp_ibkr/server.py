@@ -18,7 +18,7 @@ mcp = FastMCP("IBKR MCP")
 
 
 def create_app() -> FastAPI:
-    mcp_app = mcp.http_app(path="/mcp")
+    mcp_app = mcp.http_app(path="/mcp", json_response=True, stateless_http=True)
     app = FastAPI(lifespan=mcp_app.lifespan)
 
     @app.get("/health")
@@ -90,18 +90,6 @@ def ibkr_get_portfolio(
     client = create_client()
     try:
         client.connect()
-    except IBKRConnectionError as exc:
-        logger.warning("tws connection failed", exc_info=True)
-        error = ErrorResponse(
-            error=ErrorDetails(
-                type="TWS_CONNECTION_FAILED",
-                message=str(exc),
-                retryable=True,
-            )
-        )
-        return error.model_dump()
-
-    try:
         resolved_account, notes = _resolve_account(account, client)
         raw_positions = client.get_positions()
 
@@ -126,6 +114,16 @@ def ibkr_get_portfolio(
             notes=notes,
         )
         return response.model_dump()
+    except IBKRConnectionError as exc:
+        logger.warning("tws connection failed", exc_info=True)
+        error = ErrorResponse(
+            error=ErrorDetails(
+                type="TWS_CONNECTION_FAILED",
+                message=str(exc),
+                retryable=True,
+            )
+        )
+        return error.model_dump()
     except Exception as exc:
         logger.exception("ibkr_get_portfolio failed")
         error = ErrorResponse(

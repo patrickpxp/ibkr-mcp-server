@@ -3,7 +3,7 @@ import math
 import os
 from typing import Iterable, Optional
 
-from ib_async import IB
+from ib_async import IB, util
 
 from .models import PnlResult, PositionModel, PositionSnapshot, TotalsModel
 
@@ -74,6 +74,7 @@ class IBKRClient:
 
     def connect(self) -> None:
         try:
+            util.startLoop()
             connected = self.ib.connect(
                 self.host,
                 self.port,
@@ -131,7 +132,12 @@ class IBKRClient:
         market_data_missing = False
         if positions_list:
             try:
-                tickers = self.ib.reqTickers(*[pos.contract for pos in positions_list])
+                tickers = util.run(
+                    self.ib.reqTickersAsync(
+                        *[pos.contract for pos in positions_list]
+                    ),
+                    timeout=self.timeout_seconds,
+                )
                 for ticker in tickers:
                     contract = getattr(ticker, "contract", None)
                     if not contract:
@@ -166,7 +172,10 @@ class IBKRClient:
         net_liquidation = None
         currency = None
         try:
-            summary = self.ib.accountSummary(account) if account else self.ib.accountSummary()
+            summary = util.run(
+                self.ib.accountSummaryAsync(account) if account else self.ib.accountSummaryAsync(),
+                timeout=self.timeout_seconds,
+            )
             for item in summary:
                 if item.tag == "NetLiquidation" and item.currency in ("", "BASE"):
                     net_liquidation = _to_float(item.value)
