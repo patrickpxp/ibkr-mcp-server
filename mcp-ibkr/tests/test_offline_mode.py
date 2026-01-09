@@ -13,7 +13,7 @@ class FailingClient:
 def test_offline_mode(monkeypatch):
     monkeypatch.setattr(server, "create_client", lambda: FailingClient())
 
-    response = server.ibkr_get_portfolio()
+    response = server.ibkr_get_portfolio.fn()
 
     assert "error" in response
     error = response["error"]

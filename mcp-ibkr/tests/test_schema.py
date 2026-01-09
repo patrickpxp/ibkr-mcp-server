@@ -26,7 +26,7 @@ def test_schema(monkeypatch, sample_positions, sample_pnl_result):
     stub = StubClient(sample_positions, sample_pnl_result)
     monkeypatch.setattr(server, "create_client", lambda: stub)
 
-    response = server.ibkr_get_portfolio()
+    response = server.ibkr_get_portfolio.fn()
 
     assert "error" not in response
     assert response["account"] == "U1234567"

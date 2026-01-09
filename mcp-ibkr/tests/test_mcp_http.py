@@ -55,7 +55,8 @@ def _post_mcp(client, payload):
 
 
 def test_tools_list_accepts_json_only():
-    with TestClient(server.app) as client:
+    app = server.create_app()
+    with TestClient(app) as client:
         response = _post_mcp(
             client,
             {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
@@ -74,7 +75,8 @@ def test_tools_call_returns_structured_content(monkeypatch, sample_positions, sa
     stub = StubClient(sample_positions, sample_pnl_result)
     monkeypatch.setattr(server, "create_client", lambda: stub)
 
-    with TestClient(server.app) as client:
+    app = server.create_app()
+    with TestClient(app) as client:
         response = _post_mcp(
             client,
             {
@@ -97,7 +99,8 @@ def test_tools_call_include_pnl_false_skips_pnl(monkeypatch, sample_positions):
     stub = PnlForbiddenClient(sample_positions)
     monkeypatch.setattr(server, "create_client", lambda: stub)
 
-    with TestClient(server.app) as client:
+    app = server.create_app()
+    with TestClient(app) as client:
         response = _post_mcp(
             client,
             {
@@ -131,7 +134,7 @@ def test_disconnect_called_on_connect_error(monkeypatch):
     client = FailingClient()
     monkeypatch.setattr(server, "create_client", lambda: client)
 
-    response = server.ibkr_get_portfolio()
+    response = server.ibkr_get_portfolio.fn()
 
     assert response["error"]["type"] == "TWS_CONNECTION_FAILED"
     assert client.disconnected is True
