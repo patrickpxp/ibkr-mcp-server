@@ -18,7 +18,12 @@ Environment variables (with defaults):
 - `IBKR_TIMEOUT_SECONDS` (default `10`)
 - `MCP_BIND_HOST` (default `0.0.0.0`)
 - `MCP_PORT` (default `8000`)
+- `MCP_JSON_RESPONSE` (default `true`)
+- `MCP_STATELESS_HTTP` (default `true`)
 - `TZ` (default `Europe/Madrid`)
+
+Set `MCP_JSON_RESPONSE=false` or `MCP_STATELESS_HTTP=false` to enable streamable
+HTTP/session behavior when needed.
 
 ## Run with Docker Compose
 

@@ -3,6 +3,7 @@ import os
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+import anyio
 from fastapi import FastAPI
 from fastmcp import FastMCP
 from starlette.responses import JSONResponse
@@ -17,8 +18,21 @@ logger = logging.getLogger(__name__)
 mcp = FastMCP("IBKR MCP")
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
 def create_app() -> FastAPI:
-    mcp_app = mcp.http_app(path="/mcp", json_response=True, stateless_http=True)
+    json_response = _env_bool("MCP_JSON_RESPONSE", True)
+    stateless_http = _env_bool("MCP_STATELESS_HTTP", True)
+    mcp_app = mcp.http_app(
+        path="/mcp",
+        json_response=json_response,
+        stateless_http=stateless_http,
+    )
     app = FastAPI(lifespan=mcp_app.lifespan)
 
     @app.get("/health")
@@ -81,8 +95,7 @@ def create_client() -> IBKRClient:
     return IBKRClient.from_env()
 
 
-@mcp.tool
-def ibkr_get_portfolio(
+def _ibkr_get_portfolio_sync(
     account: str | None = None,
     include_pnl: bool = True,
     as_of: str | None = None,
@@ -136,6 +149,20 @@ def ibkr_get_portfolio(
         return error.model_dump()
     finally:
         client.disconnect()
+
+
+@mcp.tool
+async def ibkr_get_portfolio(
+    account: str | None = None,
+    include_pnl: bool = True,
+    as_of: str | None = None,
+) -> dict:
+    return await anyio.to_thread.run_sync(
+        _ibkr_get_portfolio_sync,
+        account,
+        include_pnl,
+        as_of,
+    )
 
 
 def main() -> None:

@@ -1,4 +1,5 @@
 from fastapi.testclient import TestClient
+import anyio
 
 from mcp_ibkr import server
 from mcp_ibkr.ibkr_client import IBKRConnectionError
@@ -134,7 +135,7 @@ def test_disconnect_called_on_connect_error(monkeypatch):
     client = FailingClient()
     monkeypatch.setattr(server, "create_client", lambda: client)
 
-    response = server.ibkr_get_portfolio.fn()
+    response = anyio.run(server.ibkr_get_portfolio.fn)
 
     assert response["error"]["type"] == "TWS_CONNECTION_FAILED"
     assert client.disconnected is True
