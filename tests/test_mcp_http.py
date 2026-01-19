@@ -66,10 +66,18 @@ def test_tools_list_accepts_json_only():
     assert response.status_code == 200
     payload = response.json()
     assert payload["result"]["tools"]
-    assert any(
-        tool["name"] == "ibkr_get_portfolio"
-        for tool in payload["result"]["tools"]
-    )
+    tool_names = {tool["name"] for tool in payload["result"]["tools"]}
+    expected = {
+        "ibkr_get_portfolio",
+        "ibkr_get_account_summary",
+        "ibkr_get_account_values",
+        "ibkr_get_open_orders",
+        "ibkr_get_executions",
+        "ibkr_search_symbols",
+        "ibkr_get_contract_details",
+        "ibkr_get_market_data_snapshot",
+    }
+    assert expected.issubset(tool_names)
 
 
 def test_tools_call_returns_structured_content(monkeypatch, sample_positions, sample_pnl_result):
