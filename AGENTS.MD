@@ -22,3 +22,11 @@ Alternatively, install the package in editable mode and run tests normally:
 .venv/bin/python -m pip install -e .[test]
 .venv/bin/python -m pytest -q
 ```
+
+## Debug MCP Errors
+
+If a tool call returns an INTERNAL_ERROR, check container logs first:
+
+```
+docker logs ibkr-mcp-server-mcp-ibkr-1 --tail 200
+```
