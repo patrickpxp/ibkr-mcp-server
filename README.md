@@ -1,6 +1,7 @@
 # IBKR MCP Server
 
-Expose IBKR portfolio positions (and best-effort P&L) via MCP to Claude or Codex.
+Expose IBKR account data, portfolio positions (best-effort P&L), orders, executions,
+contracts, and market data snapshots via MCP to Claude or Codex.
 Tested with Interactive Brokers Trader Workstation.
 WARNING: You can lose real money if you do not understand what you are doing.
 
