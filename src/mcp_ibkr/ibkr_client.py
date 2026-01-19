@@ -1,6 +1,7 @@
 import logging
 import math
 import os
+import threading
 from typing import Iterable, Optional
 
 from ib_async import IB, util
@@ -8,6 +9,9 @@ from ib_async import IB, util
 from .models import PnlResult, PositionModel, PositionSnapshot, TotalsModel
 
 logger = logging.getLogger(__name__)
+
+_START_LOOP_LOCK = threading.Lock()
+_START_LOOP_INITIALIZED = False
 
 
 class IBKRConnectionError(Exception):
@@ -74,7 +78,12 @@ class IBKRClient:
 
     def connect(self) -> None:
         try:
-            util.startLoop()
+            global _START_LOOP_INITIALIZED
+            if not _START_LOOP_INITIALIZED:
+                with _START_LOOP_LOCK:
+                    if not _START_LOOP_INITIALIZED:
+                        util.startLoop()
+                        _START_LOOP_INITIALIZED = True
             connected = self.ib.connect(
                 self.host,
                 self.port,

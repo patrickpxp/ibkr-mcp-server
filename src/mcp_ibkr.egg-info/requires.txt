@@ -1,0 +1,9 @@
+anyio<5.0.0,>=4.5.0
+fastmcp==2.14.2
+ib_async==2.0.1
+fastapi==0.112.0
+pydantic==2.11.7
+uvicorn==0.35.0
+
+[test]
+pytest==8.2.2

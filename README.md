@@ -2,10 +2,10 @@
 
 Expose IBKR portfolio positions (and best-effort P&L) via MCP to Claude or Codex.
 Tested with Interactive Brokers Trader Workstation.
-⚠️ Be careful !! You can lose real money if you don't understand what you're doing here !!
+WARNING: You can lose real money if you do not understand what you are doing.
 
 ## Requirements
-- Docker
+- Docker (and Docker Compose v2)
 - TWS or IB Gateway running locally with API access enabled
 
 ## Configure TWS
@@ -19,35 +19,56 @@ git clone https://github.com/patrickpxp/ibkr-mcp-server
 cd ibkr-mcp-server
 ```
 
-## Configure
-Create `mcp-ibkr/.env` (ignored by git) as needed:
+## Configuration
+Create `.env` (ignored by git) as needed:
 ```
 IBKR_HOST=host.docker.internal
-IBKR_PORT=7497 # paper trading port , use 7496 for live trading
+IBKR_PORT=7497 # paper trading port, use 7496 for live trading
 IBKR_CLIENT_ID=123
 IBKR_ACCOUNT=
 IBKR_TIMEOUT_SECONDS=10
+MCP_BIND_HOST=0.0.0.0
 MCP_PORT=8000
+MCP_JSON_RESPONSE=true
+MCP_STATELESS_HTTP=true
 TZ=Europe/Madrid
 ```
 
+Set `MCP_JSON_RESPONSE=false` or `MCP_STATELESS_HTTP=false` to enable streamable
+HTTP/session behavior when needed.
+
 ## Run
 ```
-cd mcp-ibkr
 docker compose up -d --build
 ```
 
-## Verify
+Ensure TWS or IB Gateway has API access enabled and is listening on the configured port.
+
+## Health Check
 ```
-curl http://localhost:8000/health
+curl http://localhost:${MCP_PORT:-8000}/health
+```
+
+Expected response:
+```json
+{"status":"ok"}
+```
+
+## MCP Tool Invocation Example
+```
+curl -s http://localhost:${MCP_PORT:-8000}/mcp \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"ibkr_get_portfolio","arguments":{}}}'
 ```
 
 ## Register MCP Server with Codex
 ```
 codex mcp add ibkr-portfolio \
   --transport http \
-  --url http://localhost:8000/mcp
+  --url http://localhost:${MCP_PORT:-8000}/mcp
 ```
+
+Once registered, ask Codex for your IBKR portfolio to invoke the tool.
 
 ## Install the Skill
 Copy the provided skill into your Codex skills directory:
@@ -56,5 +77,13 @@ mkdir -p ~/.codex/skills
 cp -R .codex/skills/ibkr-portfolio ~/.codex/skills/
 ```
 
-## Use
-Ask Codex: "get my ibkr portfolio".
+## Tests
+```
+python -m pytest -q
+```
+
+## Future: Auth
+FastMCP includes built-in OAuth provider integrations. A future iteration can wrap the
+existing `/mcp` endpoint with FastMCP OAuth configuration (e.g., GitHub or Google) and
+add token validation middleware before exposing the server publicly. No authentication
+is implemented yet.
