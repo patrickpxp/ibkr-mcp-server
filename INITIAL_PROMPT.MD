@@ -73,19 +73,18 @@ Time:
 ## DELIVERABLES: REPO STRUCTURE (MUST CREATE)
 
 /LICENSE                         # MIT (repo root)
-/mcp-ibkr/
-README.md
-Dockerfile
-docker-compose.yml
-pyproject.toml
-src/
+/README.md
+/Dockerfile
+/docker-compose.yml
+/pyproject.toml
+/src/
 mcp_ibkr/
 **init**.py
 server.py              # FastMCP server entrypoint (Streamable HTTP mounted at /mcp, /health)
 ibkr_client.py         # ib_async connection + wrappers
 models.py              # typed models (pydantic/dataclasses)
 logging_utils.py       # stderr structured logger helper
-tests/
+/tests/
 test_schema.py           # validate JSON shape
 test_offline_mode.py     # graceful behavior when TWS unreachable
 conftest.py

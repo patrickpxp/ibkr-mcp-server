@@ -1,3 +1,23 @@
+Metadata-Version: 2.1
+Name: mcp-ibkr
+Version: 0.1.0
+Summary: MCP server exposing an IBKR portfolio tool via FastMCP.
+Author-email: IBKR MCP <devnull@example.com>
+License: MIT
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.12
+Classifier: License :: OSI Approved :: MIT License
+Requires-Python: <3.13,>=3.12
+Description-Content-Type: text/markdown
+Requires-Dist: anyio<5.0.0,>=4.5.0
+Requires-Dist: fastmcp==2.14.2
+Requires-Dist: ib_async==2.0.1
+Requires-Dist: fastapi==0.112.0
+Requires-Dist: pydantic==2.11.7
+Requires-Dist: uvicorn==0.35.0
+Provides-Extra: test
+Requires-Dist: pytest==8.2.2; extra == "test"
+
 # MCP IBKR Server
 
 A FastMCP-based server that exposes a single tool, `ibkr_get_portfolio`, to fetch IBKR positions and best-effort P&L from a local TWS/IB Gateway instance.
@@ -18,7 +38,12 @@ Environment variables (with defaults):
 - `IBKR_TIMEOUT_SECONDS` (default `10`)
 - `MCP_BIND_HOST` (default `0.0.0.0`)
 - `MCP_PORT` (default `8000`)
+- `MCP_JSON_RESPONSE` (default `true`)
+- `MCP_STATELESS_HTTP` (default `true`)
 - `TZ` (default `Europe/Madrid`)
+
+Set `MCP_JSON_RESPONSE=false` or `MCP_STATELESS_HTTP=false` to enable streamable
+HTTP/session behavior when needed.
 
 ## Run with Docker Compose
 

@@ -1,13 +1,20 @@
 import logging
 import math
 import os
+import threading
 from typing import Iterable, Optional
 
 from ib_async import IB, util
+from ib_async.contract import Contract, ContractDescription, ContractDetails
+from ib_async.objects import AccountValue, ExecutionFilter, Fill
+from ib_async.order import Trade
 
 from .models import PnlResult, PositionModel, PositionSnapshot, TotalsModel
 
 logger = logging.getLogger(__name__)
+
+_START_LOOP_LOCK = threading.Lock()
+_START_LOOP_INITIALIZED = False
 
 
 class IBKRConnectionError(Exception):
@@ -24,6 +31,29 @@ def _to_float(value: object) -> Optional[float]:
     if math.isnan(number):
         return None
     return number
+
+
+def _to_int(value: object) -> Optional[int]:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _coerce_bool(value: object) -> Optional[bool]:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"1", "true", "yes", "y", "on"}:
+            return True
+        if lowered in {"0", "false", "no", "n", "off"}:
+            return False
+    return None
 
 
 def _best_price(ticker: object) -> Optional[float]:
@@ -74,7 +104,12 @@ class IBKRClient:
 
     def connect(self) -> None:
         try:
-            util.startLoop()
+            global _START_LOOP_INITIALIZED
+            if not _START_LOOP_INITIALIZED:
+                with _START_LOOP_LOCK:
+                    if not _START_LOOP_INITIALIZED:
+                        util.startLoop()
+                        _START_LOOP_INITIALIZED = True
             connected = self.ib.connect(
                 self.host,
                 self.port,
@@ -116,8 +151,124 @@ class IBKRClient:
             )
         return positions
 
+    @staticmethod
+    def contract_from_input(data: dict[str, object]) -> Contract:
+        if not isinstance(data, dict):
+            raise ValueError("contract must be an object")
+        allowed_fields = {
+            "conId",
+            "symbol",
+            "secType",
+            "exchange",
+            "currency",
+            "primaryExchange",
+            "lastTradeDateOrContractMonth",
+            "strike",
+            "right",
+            "multiplier",
+            "localSymbol",
+            "tradingClass",
+            "includeExpired",
+            "secIdType",
+            "secId",
+        }
+        kwargs: dict[str, object] = {}
+        for key in allowed_fields:
+            if key not in data:
+                continue
+            value = data.get(key)
+            if value is None:
+                continue
+            if key in {"conId"}:
+                coerced = _to_int(value)
+                if coerced is not None:
+                    kwargs[key] = coerced
+            elif key in {"strike"}:
+                coerced = _to_float(value)
+                if coerced is not None:
+                    kwargs[key] = coerced
+            elif key in {"includeExpired"}:
+                coerced = _coerce_bool(value)
+                if coerced is not None:
+                    kwargs[key] = coerced
+            else:
+                kwargs[key] = str(value)
+
+        if not kwargs:
+            raise ValueError("contract requires at least one field")
+        return Contract(**kwargs)
+
     def get_managed_accounts(self) -> list[str]:
         return list(self.ib.managedAccounts())
+
+    def get_account_summary(self, account: str) -> list[AccountValue]:
+        return list(
+            util.run(
+                self.ib.accountSummaryAsync(account),
+                timeout=self.timeout_seconds,
+            )
+        )
+
+    def get_account_values(self, account: str) -> list[AccountValue]:
+        util.run(
+            self.ib.reqAccountUpdatesAsync(account),
+            timeout=self.timeout_seconds,
+        )
+        values = list(self.ib.accountValues(account))
+        try:
+            self.ib.client.reqAccountUpdates(False, account)
+        except Exception:
+            logger.warning("account updates unsubscribe failed", exc_info=True)
+        return values
+
+    def get_open_orders(self) -> list[Trade]:
+        return list(
+            util.run(
+                self.ib.reqOpenOrdersAsync(),
+                timeout=self.timeout_seconds,
+            )
+        )
+
+    def get_executions(self, exec_filter: Optional[ExecutionFilter]) -> list[Fill]:
+        return list(
+            util.run(
+                self.ib.reqExecutionsAsync(exec_filter),
+                timeout=self.timeout_seconds,
+            )
+        )
+
+    def search_symbols(self, query: str) -> list[ContractDescription]:
+        result = util.run(
+            self.ib.reqMatchingSymbolsAsync(query),
+            timeout=self.timeout_seconds,
+        )
+        return list(result or [])
+
+    def get_contract_details(self, contract: Contract) -> list[ContractDetails]:
+        return list(
+            util.run(
+                self.ib.reqContractDetailsAsync(contract),
+                timeout=self.timeout_seconds,
+            )
+        )
+
+    def get_market_data_snapshot(
+        self,
+        contracts: Iterable[Contract],
+        regulatory_snapshot: bool = False,
+    ) -> list[object]:
+        contracts_list = list(contracts)
+        if not contracts_list:
+            return []
+        return list(
+            util.run(
+                self.ib.reqTickersAsync(
+                    *contracts_list,
+                    regulatorySnapshot=regulatory_snapshot,
+                ),
+                timeout=self.timeout_seconds,
+            )
+        )
 
     def get_pnl_best_effort(
         self,

@@ -16,6 +16,7 @@ classifiers = [
   "License :: OSI Approved :: MIT License",
 ]
 dependencies = [
+  "anyio>=4.5.0,<5.0.0",
   "fastmcp==2.14.2",
   "ib_async==2.0.1",
   "fastapi==0.112.0",
