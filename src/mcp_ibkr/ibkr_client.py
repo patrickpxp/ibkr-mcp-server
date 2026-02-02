@@ -222,10 +222,13 @@ class IBKRClient:
         )
 
     def get_account_values(self, account: str) -> list[AccountValue]:
-        util.run(
-            self.ib.reqAccountUpdatesAsync(account),
-            timeout=self.timeout_seconds,
-        )
+        try:
+            util.run(
+                self.ib.reqAccountUpdatesAsync(account),
+                timeout=min(self.timeout_seconds, 2),
+            )
+        except TimeoutError:
+            logger.warning("account updates refresh timed out; using cached values")
         values = list(self.ib.accountValues(account))
         try:
             self.ib.client.reqAccountUpdates(False, account)
