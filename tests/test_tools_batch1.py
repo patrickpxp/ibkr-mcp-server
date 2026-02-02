@@ -121,7 +121,7 @@ class StubClient:
     def get_account_values(self, account):
         return [StubAccountValue("BuyingPower", "50000", "USD", account, "")]
 
-    def get_open_orders(self):
+    def get_open_orders(self, include_all: bool = True):
         return [StubTrade()]
 
     def get_executions(self, exec_filter):
@@ -134,7 +134,7 @@ class StubClient:
         return [StubContractDetails()]
 
     def get_market_data_snapshot(self, contracts, regulatory_snapshot=False):
-        return [StubTicker()]
+        return [StubTicker()], []
 
 
 def _use_stub(monkeypatch):
