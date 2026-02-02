@@ -1,3 +1,4 @@
+import copy
 import logging
 import math
 import os
@@ -12,6 +13,17 @@ from ib_async.order import Trade
 from .models import PnlResult, PositionModel, PositionSnapshot, TotalsModel
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_market_data_contract(contract: Contract) -> Contract:
+    exchange = getattr(contract, "exchange", None)
+    if exchange and exchange.upper() == "IBIS":
+        contract_copy = copy.copy(contract)
+        contract_copy.exchange = "SMART"
+        if not getattr(contract_copy, "primaryExchange", None):
+            contract_copy.primaryExchange = "IBIS"
+        return contract_copy
+    return contract
 
 _START_LOOP_LOCK = threading.Lock()
 _START_LOOP_INITIALIZED = False
@@ -276,10 +288,13 @@ class IBKRClient:
                 )
         if not qualified_contracts:
             return [], notes
+        normalized_contracts = [
+            _normalize_market_data_contract(contract) for contract in qualified_contracts
+        ]
         tickers = list(
             util.run(
                 self.ib.reqTickersAsync(
-                    *qualified_contracts,
+                    *normalized_contracts,
                     regulatorySnapshot=regulatory_snapshot,
                 ),
                 timeout=self.timeout_seconds,
@@ -300,10 +315,12 @@ class IBKRClient:
         market_data_missing = False
         if positions_list:
             try:
+                normalized_contracts = [
+                    _normalize_market_data_contract(pos.contract)
+                    for pos in positions_list
+                ]
                 tickers = util.run(
-                    self.ib.reqTickersAsync(
-                        *[pos.contract for pos in positions_list]
-                    ),
+                    self.ib.reqTickersAsync(*normalized_contracts),
                     timeout=self.timeout_seconds,
                 )
                 for ticker in tickers:
