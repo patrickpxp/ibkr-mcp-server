@@ -304,12 +304,15 @@ async def ibkr_get_account_values(account: str | None = None) -> dict:
     )
 
 
-def _ibkr_get_open_orders_sync(account: str | None = None) -> dict:
+def _ibkr_get_open_orders_sync(
+    account: str | None = None,
+    include_all: bool = True,
+) -> dict:
     def action(client: IBKRClient) -> dict:
         resolved_account = _resolve_optional_account(account)
         notes: list[str] = []
         orders = []
-        for trade in client.get_open_orders():
+        for trade in client.get_open_orders(include_all=include_all):
             order_account = getattr(trade.order, "account", None)
             if resolved_account and order_account and order_account != resolved_account:
                 continue
@@ -335,10 +338,14 @@ def _ibkr_get_open_orders_sync(account: str | None = None) -> dict:
 
 
 @mcp.tool
-async def ibkr_get_open_orders(account: str | None = None) -> dict:
+async def ibkr_get_open_orders(
+    account: str | None = None,
+    include_all: bool = True,
+) -> dict:
     return await anyio.to_thread.run_sync(
         _ibkr_get_open_orders_sync,
         account,
+        include_all,
     )
 
 
@@ -501,10 +508,12 @@ def _ibkr_get_market_data_snapshot_sync(
             except ValueError as exc:
                 return _error_response("INVALID_ARGUMENT", str(exc), False)
         snapshots = []
-        for ticker in client.get_market_data_snapshot(
+        tickers, qualification_notes = client.get_market_data_snapshot(
             contract_list,
             regulatory_snapshot=regulatory_snapshot,
-        ):
+        )
+        notes.extend(qualification_notes)
+        for ticker in tickers:
             contract = getattr(ticker, "contract", None)
             market_price_value = getattr(ticker, "marketPrice", None)
             if callable(market_price_value):

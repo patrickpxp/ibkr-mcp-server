@@ -221,10 +221,11 @@ class IBKRClient:
             logger.warning("account updates unsubscribe failed", exc_info=True)
         return values
 
-    def get_open_orders(self) -> list[Trade]:
+    def get_open_orders(self, include_all: bool = True) -> list[Trade]:
+        request = self.ib.reqAllOpenOrdersAsync() if include_all else self.ib.reqOpenOrdersAsync()
         return list(
             util.run(
-                self.ib.reqOpenOrdersAsync(),
+                request,
                 timeout=self.timeout_seconds,
             )
         )
@@ -256,19 +257,35 @@ class IBKRClient:
         self,
         contracts: Iterable[Contract],
         regulatory_snapshot: bool = False,
-    ) -> list[object]:
+    ) -> tuple[list[object], list[str]]:
         contracts_list = list(contracts)
         if not contracts_list:
-            return []
-        return list(
+            return [], []
+        qualified = util.run(
+            self.ib.qualifyContractsAsync(*contracts_list),
+            timeout=self.timeout_seconds,
+        )
+        notes: list[str] = []
+        qualified_contracts: list[Contract] = []
+        for contract, result in zip(contracts_list, qualified):
+            if isinstance(result, Contract):
+                qualified_contracts.append(result)
+            else:
+                notes.append(
+                    f"contract not qualified: {getattr(contract, 'symbol', '')} {getattr(contract, 'secType', '')}"
+                )
+        if not qualified_contracts:
+            return [], notes
+        tickers = list(
             util.run(
                 self.ib.reqTickersAsync(
-                    *contracts_list,
+                    *qualified_contracts,
                     regulatorySnapshot=regulatory_snapshot,
                 ),
                 timeout=self.timeout_seconds,
             )
         )
+        return tickers, notes
 
     def get_pnl_best_effort(
         self,
