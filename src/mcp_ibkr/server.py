@@ -27,6 +27,8 @@ from .models import (
     ExecutionModel,
     ExecutionsResponse,
     MarketDataSnapshotModel,
+    MarketDataSnapshotAttempt,
+    MarketDataSnapshotDebugResponse,
     MarketDataSnapshotResponse,
     OpenOrderModel,
     OpenOrdersResponse,
@@ -304,12 +306,15 @@ async def ibkr_get_account_values(account: str | None = None) -> dict:
     )
 
 
-def _ibkr_get_open_orders_sync(account: str | None = None) -> dict:
+def _ibkr_get_open_orders_sync(
+    account: str | None = None,
+    include_all: bool = True,
+) -> dict:
     def action(client: IBKRClient) -> dict:
         resolved_account = _resolve_optional_account(account)
         notes: list[str] = []
         orders = []
-        for trade in client.get_open_orders():
+        for trade in client.get_open_orders(include_all=include_all):
             order_account = getattr(trade.order, "account", None)
             if resolved_account and order_account and order_account != resolved_account:
                 continue
@@ -335,10 +340,14 @@ def _ibkr_get_open_orders_sync(account: str | None = None) -> dict:
 
 
 @mcp.tool
-async def ibkr_get_open_orders(account: str | None = None) -> dict:
+async def ibkr_get_open_orders(
+    account: str | None = None,
+    include_all: bool = True,
+) -> dict:
     return await anyio.to_thread.run_sync(
         _ibkr_get_open_orders_sync,
         account,
+        include_all,
     )
 
 
@@ -501,10 +510,12 @@ def _ibkr_get_market_data_snapshot_sync(
             except ValueError as exc:
                 return _error_response("INVALID_ARGUMENT", str(exc), False)
         snapshots = []
-        for ticker in client.get_market_data_snapshot(
+        tickers, qualification_notes = client.get_market_data_snapshot(
             contract_list,
             regulatory_snapshot=regulatory_snapshot,
-        ):
+        )
+        notes.extend(qualification_notes)
+        for ticker in tickers:
             contract = getattr(ticker, "contract", None)
             market_price_value = getattr(ticker, "marketPrice", None)
             if callable(market_price_value):
@@ -538,6 +549,96 @@ async def ibkr_get_market_data_snapshot(
         _ibkr_get_market_data_snapshot_sync,
         contracts,
         regulatory_snapshot,
+    )
+
+
+def _ibkr_debug_market_data_snapshot_sync(
+    contract: dict,
+    regulatory_snapshot: bool = False,
+    market_data_type: int | None = None,
+    force_smart: bool = True,
+) -> dict:
+    def action(client: IBKRClient) -> dict:
+        notes: list[str] = []
+        if not isinstance(contract, dict):
+            return _error_response("INVALID_ARGUMENT", "contract must be an object", False)
+        try:
+            base_contract = IBKRClient.contract_from_input(contract)
+        except ValueError as exc:
+            return _error_response("INVALID_ARGUMENT", str(exc), False)
+
+        if market_data_type is not None:
+            try:
+                client.ib.reqMarketDataType(int(market_data_type))
+                notes.append(f"market data type set to {int(market_data_type)}")
+            except Exception as exc:
+                notes.append(f"market data type set failed: {exc}")
+
+        def build_attempt(contract_obj: object) -> MarketDataSnapshotAttempt:
+            snapshots: list[MarketDataSnapshotModel] = []
+            tickers, attempt_notes = client.get_market_data_snapshot(
+                [contract_obj],
+                regulatory_snapshot=regulatory_snapshot,
+            )
+            for ticker in tickers:
+                contract_value = getattr(ticker, "contract", None)
+                market_price_value = getattr(ticker, "marketPrice", None)
+                if callable(market_price_value):
+                    market_price_value = market_price_value()
+                snapshots.append(
+                    MarketDataSnapshotModel(
+                        conId=getattr(contract_value, "conId", None),
+                        symbol=getattr(contract_value, "symbol", None),
+                        secType=getattr(contract_value, "secType", None),
+                        exchange=getattr(contract_value, "exchange", None),
+                        currency=getattr(contract_value, "currency", None),
+                        bid=_optional_float(getattr(ticker, "bid", None)),
+                        ask=_optional_float(getattr(ticker, "ask", None)),
+                        last=_optional_float(getattr(ticker, "last", None)),
+                        close=_optional_float(getattr(ticker, "close", None)),
+                        marketPrice=_optional_float(market_price_value),
+                    )
+                )
+            return MarketDataSnapshotAttempt(
+                request=_contract_model(contract_obj),
+                snapshots=snapshots,
+                notes=attempt_notes,
+            )
+
+        attempts = [build_attempt(base_contract)]
+
+        if force_smart:
+            exchange = getattr(base_contract, "exchange", None)
+            if exchange and exchange.upper() != "SMART":
+                modified = dict(contract)
+                modified["exchange"] = "SMART"
+                if not modified.get("primaryExchange"):
+                    modified["primaryExchange"] = exchange
+                try:
+                    smart_contract = IBKRClient.contract_from_input(modified)
+                    attempts.append(build_attempt(smart_contract))
+                except ValueError as exc:
+                    notes.append(f"smart override failed: {exc}")
+
+        response = MarketDataSnapshotDebugResponse(attempts=attempts, notes=notes)
+        return response.model_dump()
+
+    return _run_with_client(action)
+
+
+@mcp.tool
+async def ibkr_debug_market_data_snapshot(
+    contract: dict,
+    regulatory_snapshot: bool = False,
+    market_data_type: int | None = None,
+    force_smart: bool = True,
+) -> dict:
+    return await anyio.to_thread.run_sync(
+        _ibkr_debug_market_data_snapshot_sync,
+        contract,
+        regulatory_snapshot,
+        market_data_type,
+        force_smart,
     )
 
 

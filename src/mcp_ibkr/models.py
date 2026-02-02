@@ -237,3 +237,18 @@ class MarketDataSnapshotResponse(BaseModel):
 
     snapshots: list[MarketDataSnapshotModel]
     notes: list[str]
+
+
+class MarketDataSnapshotAttempt(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    request: ContractModel
+    snapshots: list[MarketDataSnapshotModel]
+    notes: list[str]
+
+
+class MarketDataSnapshotDebugResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    attempts: list[MarketDataSnapshotAttempt]
+    notes: list[str]

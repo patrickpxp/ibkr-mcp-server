@@ -1,6 +1,7 @@
 # IBKR MCP Server
 
-Expose IBKR portfolio positions (and best-effort P&L) via MCP to Claude or Codex.
+Expose IBKR account data, portfolio positions (best-effort P&L), orders, executions,
+contracts, and market data snapshots via MCP to Claude or Codex.
 Tested with Interactive Brokers Trader Workstation.
 WARNING: You can lose real money if you do not understand what you are doing.
 
@@ -64,12 +65,13 @@ curl -s http://localhost:${MCP_PORT:-8000}/mcp \
 ## Tools
 - `ibkr_get_portfolio`: Positions with best-effort P&L.
 - `ibkr_get_account_summary`: Account summary values (NetLiquidation, BuyingPower, etc.).
-- `ibkr_get_account_values`: Account values snapshot (requires account updates request).
+- `ibkr_get_account_values`: Account values snapshot (uses a short refresh; may fall back to cached values).
 - `ibkr_get_open_orders`: Open orders with contract details and status.
 - `ibkr_get_executions`: Executions/fills with basic execution details.
 - `ibkr_search_symbols`: Symbol lookup via matching symbols.
 - `ibkr_get_contract_details`: Contract details for a given contract input.
-- `ibkr_get_market_data_snapshot`: One-shot market data snapshot for contracts.
+- `ibkr_get_market_data_snapshot`: One-shot market data snapshot for contracts (IBIS requests are normalized to SMART + primaryExchange=IBIS).
+- `ibkr_debug_market_data_snapshot`: Diagnostic snapshot that compares raw vs SMART+primaryExchange requests.
 
 ## Register MCP Server with Codex
 ```

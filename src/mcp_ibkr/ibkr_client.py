@@ -1,3 +1,4 @@
+import copy
 import logging
 import math
 import os
@@ -12,6 +13,17 @@ from ib_async.order import Trade
 from .models import PnlResult, PositionModel, PositionSnapshot, TotalsModel
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_market_data_contract(contract: Contract) -> Contract:
+    exchange = getattr(contract, "exchange", None)
+    if exchange and exchange.upper() == "IBIS":
+        contract_copy = copy.copy(contract)
+        contract_copy.exchange = "SMART"
+        if not getattr(contract_copy, "primaryExchange", None):
+            contract_copy.primaryExchange = "IBIS"
+        return contract_copy
+    return contract
 
 _START_LOOP_LOCK = threading.Lock()
 _START_LOOP_INITIALIZED = False
@@ -210,10 +222,13 @@ class IBKRClient:
         )
 
     def get_account_values(self, account: str) -> list[AccountValue]:
-        util.run(
-            self.ib.reqAccountUpdatesAsync(account),
-            timeout=self.timeout_seconds,
-        )
+        try:
+            util.run(
+                self.ib.reqAccountUpdatesAsync(account),
+                timeout=min(self.timeout_seconds, 2),
+            )
+        except TimeoutError:
+            logger.warning("account updates refresh timed out; using cached values")
         values = list(self.ib.accountValues(account))
         try:
             self.ib.client.reqAccountUpdates(False, account)
@@ -221,10 +236,11 @@ class IBKRClient:
             logger.warning("account updates unsubscribe failed", exc_info=True)
         return values
 
-    def get_open_orders(self) -> list[Trade]:
+    def get_open_orders(self, include_all: bool = True) -> list[Trade]:
+        request = self.ib.reqAllOpenOrdersAsync() if include_all else self.ib.reqOpenOrdersAsync()
         return list(
             util.run(
-                self.ib.reqOpenOrdersAsync(),
+                request,
                 timeout=self.timeout_seconds,
             )
         )
@@ -256,19 +272,38 @@ class IBKRClient:
         self,
         contracts: Iterable[Contract],
         regulatory_snapshot: bool = False,
-    ) -> list[object]:
+    ) -> tuple[list[object], list[str]]:
         contracts_list = list(contracts)
         if not contracts_list:
-            return []
-        return list(
+            return [], []
+        qualified = util.run(
+            self.ib.qualifyContractsAsync(*contracts_list),
+            timeout=self.timeout_seconds,
+        )
+        notes: list[str] = []
+        qualified_contracts: list[Contract] = []
+        for contract, result in zip(contracts_list, qualified):
+            if isinstance(result, Contract):
+                qualified_contracts.append(result)
+            else:
+                notes.append(
+                    f"contract not qualified: {getattr(contract, 'symbol', '')} {getattr(contract, 'secType', '')}"
+                )
+        if not qualified_contracts:
+            return [], notes
+        normalized_contracts = [
+            _normalize_market_data_contract(contract) for contract in qualified_contracts
+        ]
+        tickers = list(
             util.run(
                 self.ib.reqTickersAsync(
-                    *contracts_list,
+                    *normalized_contracts,
                     regulatorySnapshot=regulatory_snapshot,
                 ),
                 timeout=self.timeout_seconds,
             )
         )
+        return tickers, notes
 
     def get_pnl_best_effort(
         self,
@@ -283,10 +318,12 @@ class IBKRClient:
         market_data_missing = False
         if positions_list:
             try:
+                normalized_contracts = [
+                    _normalize_market_data_contract(pos.contract)
+                    for pos in positions_list
+                ]
                 tickers = util.run(
-                    self.ib.reqTickersAsync(
-                        *[pos.contract for pos in positions_list]
-                    ),
+                    self.ib.reqTickersAsync(*normalized_contracts),
                     timeout=self.timeout_seconds,
                 )
                 for ticker in tickers:
