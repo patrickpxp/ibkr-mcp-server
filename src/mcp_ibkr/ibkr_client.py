@@ -7,7 +7,7 @@ from typing import Iterable, Optional
 
 from ib_async import IB, util
 from ib_async.contract import Contract, ContractDescription, ContractDetails
-from ib_async.objects import AccountValue, ExecutionFilter, Fill
+from ib_async.objects import AccountValue, ExecutionFilter, Fill, ScannerSubscription
 from ib_async.order import Trade
 
 from .models import PnlResult, PositionModel, PositionSnapshot, TotalsModel
@@ -268,11 +268,7 @@ class IBKRClient:
             )
         )
 
-    def get_market_data_snapshot(
-        self,
-        contracts: Iterable[Contract],
-        regulatory_snapshot: bool = False,
-    ) -> tuple[list[object], list[str]]:
+    def _qualify_contracts(self, contracts: Iterable[Contract]) -> tuple[list[Contract], list[str]]:
         contracts_list = list(contracts)
         if not contracts_list:
             return [], []
@@ -282,13 +278,25 @@ class IBKRClient:
         )
         notes: list[str] = []
         qualified_contracts: list[Contract] = []
-        for contract, result in zip(contracts_list, qualified):
+        for contract, result in zip(contracts_list, qualified or []):
             if isinstance(result, Contract):
                 qualified_contracts.append(result)
             else:
                 notes.append(
                     f"contract not qualified: {getattr(contract, 'symbol', '')} {getattr(contract, 'secType', '')}"
                 )
+        return qualified_contracts, notes
+
+    def qualify_contract(self, contract: Contract) -> tuple[Contract | None, list[str]]:
+        qualified, notes = self._qualify_contracts([contract])
+        return (qualified[0] if qualified else None), notes
+
+    def get_market_data_snapshot(
+        self,
+        contracts: Iterable[Contract],
+        regulatory_snapshot: bool = False,
+    ) -> tuple[list[object], list[str]]:
+        qualified_contracts, notes = self._qualify_contracts(contracts)
         if not qualified_contracts:
             return [], notes
         normalized_contracts = [
@@ -304,6 +312,261 @@ class IBKRClient:
             )
         )
         return tickers, notes
+
+    def get_historical_bars(
+        self,
+        contract: Contract,
+        end_date_time: object,
+        duration_str: str,
+        bar_size_setting: str,
+        what_to_show: str,
+        use_rth: bool,
+        format_date: int = 1,
+    ) -> tuple[list[object], list[str]]:
+        qualified_contracts, notes = self._qualify_contracts([contract])
+        if not qualified_contracts:
+            return [], notes
+        bars = list(
+            util.run(
+                self.ib.reqHistoricalDataAsync(
+                    qualified_contracts[0],
+                    end_date_time,
+                    duration_str,
+                    bar_size_setting,
+                    what_to_show,
+                    use_rth,
+                    format_date,
+                ),
+                timeout=self.timeout_seconds,
+            )
+        )
+        return bars, notes
+
+    def get_historical_ticks(
+        self,
+        contract: Contract,
+        start_date_time: object,
+        end_date_time: object,
+        number_of_ticks: int,
+        what_to_show: str,
+        use_rth: bool,
+        ignore_size: bool = False,
+    ) -> tuple[list[object], list[str]]:
+        qualified_contracts, notes = self._qualify_contracts([contract])
+        if not qualified_contracts:
+            return [], notes
+        ticks = list(
+            util.run(
+                self.ib.reqHistoricalTicksAsync(
+                    qualified_contracts[0],
+                    start_date_time,
+                    end_date_time,
+                    number_of_ticks,
+                    what_to_show,
+                    use_rth,
+                    ignore_size,
+                ),
+                timeout=self.timeout_seconds,
+            )
+        )
+        return ticks, notes
+
+    def get_head_timestamp(
+        self,
+        contract: Contract,
+        what_to_show: str,
+        use_rth: bool,
+        format_date: int = 1,
+    ) -> tuple[object | None, list[str]]:
+        qualified_contracts, notes = self._qualify_contracts([contract])
+        if not qualified_contracts:
+            return None, notes
+        timestamp = util.run(
+            self.ib.reqHeadTimeStampAsync(
+                qualified_contracts[0],
+                what_to_show,
+                use_rth,
+                format_date,
+            ),
+            timeout=self.timeout_seconds,
+        )
+        return timestamp, notes
+
+    def get_market_depth_snapshot(
+        self,
+        contract: Contract,
+        num_rows: int = 5,
+        is_smart_depth: bool = False,
+    ) -> tuple[list[object], list[object], list[str]]:
+        qualified_contracts, notes = self._qualify_contracts([contract])
+        if not qualified_contracts:
+            return [], [], notes
+        normalized_contract = _normalize_market_data_contract(qualified_contracts[0])
+        ticker = self.ib.reqMktDepth(
+            normalized_contract,
+            numRows=num_rows,
+            isSmartDepth=is_smart_depth,
+        )
+        try:
+            util.sleep(min(self.timeout_seconds, 1))
+        finally:
+            try:
+                self.ib.cancelMktDepth(normalized_contract, isSmartDepth=is_smart_depth)
+            except Exception:
+                logger.warning("market depth cancel failed", exc_info=True)
+        return list(getattr(ticker, "domBids", []) or []), list(
+            getattr(ticker, "domAsks", []) or []
+        ), notes
+
+    def get_option_chain(
+        self,
+        underlying_symbol: str,
+        exchange: str,
+        sec_type: str,
+        underlying_con_id: int,
+    ) -> list[object]:
+        return list(
+            util.run(
+                self.ib.reqSecDefOptParamsAsync(
+                    underlying_symbol,
+                    exchange,
+                    sec_type,
+                    underlying_con_id,
+                ),
+                timeout=self.timeout_seconds,
+            )
+        )
+
+    def get_news_providers(self) -> list[object]:
+        return list(
+            util.run(
+                self.ib.reqNewsProvidersAsync(),
+                timeout=self.timeout_seconds,
+            )
+        )
+
+    def get_historical_news(
+        self,
+        con_id: int,
+        provider_codes: str,
+        start_time: object,
+        end_time: object,
+        total_results: int,
+    ) -> list[object]:
+        result = util.run(
+            self.ib.reqHistoricalNewsAsync(
+                con_id,
+                provider_codes,
+                start_time,
+                end_time,
+                total_results,
+            ),
+            timeout=self.timeout_seconds,
+        )
+        if result is None:
+            return []
+        if isinstance(result, (list, tuple)):
+            return list(result)
+        return [result]
+
+    def get_fundamental_data(
+        self,
+        contract: Contract,
+        report_type: str,
+    ) -> tuple[str | None, list[str]]:
+        qualified_contracts, notes = self._qualify_contracts([contract])
+        if not qualified_contracts:
+            return None, notes
+        data = util.run(
+            self.ib.reqFundamentalDataAsync(
+                qualified_contracts[0],
+                report_type,
+            ),
+            timeout=self.timeout_seconds,
+        )
+        return data, notes
+
+    def get_scanner_params(self) -> str:
+        return util.run(
+            self.ib.reqScannerParametersAsync(),
+            timeout=self.timeout_seconds,
+        )
+
+    def get_news_article(self, provider_code: str, article_id: str) -> object:
+        return util.run(
+            self.ib.reqNewsArticleAsync(provider_code, article_id),
+            timeout=self.timeout_seconds,
+        )
+
+    @staticmethod
+    def scanner_subscription_from_input(data: dict[str, object]) -> ScannerSubscription:
+        if not isinstance(data, dict):
+            raise ValueError("scanner subscription must be an object")
+        allowed_fields = {
+            "numberOfRows",
+            "instrument",
+            "locationCode",
+            "scanCode",
+            "abovePrice",
+            "belowPrice",
+            "aboveVolume",
+            "marketCapAbove",
+            "marketCapBelow",
+            "moodyRatingAbove",
+            "moodyRatingBelow",
+            "spRatingAbove",
+            "spRatingBelow",
+            "maturityDateAbove",
+            "maturityDateBelow",
+            "couponRateAbove",
+            "couponRateBelow",
+            "excludeConvertible",
+            "averageOptionVolumeAbove",
+            "scannerSettingPairs",
+            "stockTypeFilter",
+        }
+        kwargs: dict[str, object] = {}
+        for key in allowed_fields:
+            if key not in data:
+                continue
+            value = data.get(key)
+            if value is None:
+                continue
+            if key in {"numberOfRows", "aboveVolume", "averageOptionVolumeAbove"}:
+                coerced = _to_int(value)
+                if coerced is not None:
+                    kwargs[key] = coerced
+            elif key in {
+                "abovePrice",
+                "belowPrice",
+                "marketCapAbove",
+                "marketCapBelow",
+                "couponRateAbove",
+                "couponRateBelow",
+            }:
+                coerced = _to_float(value)
+                if coerced is not None:
+                    kwargs[key] = coerced
+            elif key in {"excludeConvertible"}:
+                coerced = _coerce_bool(value)
+                if coerced is not None:
+                    kwargs[key] = coerced
+            else:
+                kwargs[key] = str(value)
+        if not kwargs:
+            raise ValueError("scanner subscription requires at least one field")
+        return ScannerSubscription(**kwargs)
+
+    def run_scanner(
+        self,
+        subscription: ScannerSubscription,
+    ) -> list[object]:
+        return list(
+            util.run(
+                self.ib.reqScannerDataAsync(subscription),
+                timeout=self.timeout_seconds,
+            )
+        )
 
     def get_pnl_best_effort(
         self,

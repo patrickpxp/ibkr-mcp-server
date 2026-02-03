@@ -76,6 +76,17 @@ def test_tools_list_accepts_json_only():
         "ibkr_search_symbols",
         "ibkr_get_contract_details",
         "ibkr_get_market_data_snapshot",
+        "ibkr_get_historical_bars",
+        "ibkr_get_historical_ticks",
+        "ibkr_get_head_timestamp",
+        "ibkr_get_market_depth_snapshot",
+        "ibkr_get_option_chain",
+        "ibkr_get_news_providers",
+        "ibkr_get_historical_news",
+        "ibkr_get_news_article",
+        "ibkr_get_fundamental_data",
+        "ibkr_get_scanner_params",
+        "ibkr_run_scanner",
     }
     assert expected.issubset(tool_names)
 

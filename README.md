@@ -72,6 +72,19 @@ curl -s http://localhost:${MCP_PORT:-8000}/mcp \
 - `ibkr_get_contract_details`: Contract details for a given contract input.
 - `ibkr_get_market_data_snapshot`: One-shot market data snapshot for contracts (IBIS requests are normalized to SMART + primaryExchange=IBIS).
 - `ibkr_debug_market_data_snapshot`: Diagnostic snapshot that compares raw vs SMART+primaryExchange requests.
+- `ibkr_get_historical_bars`: Historical OHLCV bars for a contract.
+- `ibkr_get_historical_ticks`: Historical ticks (bid/ask/trades/midpoint) for a contract.
+- `ibkr_get_head_timestamp`: Earliest available historical data timestamp for a contract.
+- `ibkr_get_market_depth_snapshot`: One-shot market depth (L2) snapshot for a contract.
+- `ibkr_get_option_chain`: Option chain metadata (expirations/strikes) for an underlying.
+- `ibkr_get_news_providers`: Available news provider codes/names.
+- `ibkr_get_historical_news`: Historical news headlines for a contract.
+- `ibkr_get_news_article`: News article body for a provider/article id.
+- `ibkr_get_fundamental_data`: Fundamental data report (JSON by default, XML optional).
+- `ibkr_get_scanner_params`: Scanner parameters (JSON by default, XML optional).
+- `ibkr_run_scanner`: Run a market scanner subscription and return ranked results.
+
+Batch 2 tool examples: `docs/batch2_examples.md`.
 
 ## Register MCP Server with Codex
 ```

@@ -11,6 +11,7 @@ from ib_async.objects import ExecutionFilter
 from ib_async import util
 from starlette.responses import JSONResponse
 import uvicorn
+import xmltodict
 
 from .ibkr_client import IBKRClient, IBKRConnectionError
 from .logging_utils import configure_logging
@@ -26,14 +27,32 @@ from .models import (
     ErrorResponse,
     ExecutionModel,
     ExecutionsResponse,
+    FundamentalDataResponse,
+    HeadTimestampResponse,
+    HistoricalBarModel,
+    HistoricalBarsResponse,
+    HistoricalNewsItemModel,
+    HistoricalNewsResponse,
+    HistoricalTickModel,
+    HistoricalTicksResponse,
+    NewsArticleResponse,
     MarketDataSnapshotModel,
     MarketDataSnapshotAttempt,
     MarketDataSnapshotDebugResponse,
     MarketDataSnapshotResponse,
+    MarketDepthLevelModel,
+    MarketDepthSnapshotResponse,
+    NewsProviderModel,
+    NewsProvidersResponse,
     OpenOrderModel,
     OpenOrdersResponse,
+    OptionChainModel,
+    OptionChainResponse,
     PortfolioResponse,
     PositionModel,
+    ScannerDataResponse,
+    ScannerParamsResponse,
+    ScannerResultModel,
     SymbolMatchModel,
     SymbolMatchesResponse,
     TotalsModel,
@@ -167,6 +186,17 @@ def _optional_float(value: object) -> float | None:
     if number != number:
         return None
     return number
+
+
+def _optional_int(value: object) -> int | None:
+    if value is None:
+        return None
+    if value in {util.UNSET_DOUBLE, util.UNSET_INTEGER}:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _contract_model(contract: object | None) -> ContractModel:
@@ -549,6 +579,556 @@ async def ibkr_get_market_data_snapshot(
         _ibkr_get_market_data_snapshot_sync,
         contracts,
         regulatory_snapshot,
+    )
+
+
+def _ibkr_get_historical_bars_sync(
+    contract: dict,
+    endDateTime: str | None,
+    durationStr: str,
+    barSizeSetting: str,
+    whatToShow: str,
+    useRTH: bool,
+    formatDate: int = 1,
+) -> dict:
+    def action(client: IBKRClient) -> dict:
+        notes: list[str] = []
+        if not isinstance(contract, dict):
+            return _error_response("INVALID_ARGUMENT", "contract must be an object", False)
+        try:
+            contract_obj = IBKRClient.contract_from_input(contract)
+        except ValueError as exc:
+            return _error_response("INVALID_ARGUMENT", str(exc), False)
+        bars, qualification_notes = client.get_historical_bars(
+            contract_obj,
+            endDateTime or "",
+            durationStr,
+            barSizeSetting,
+            whatToShow,
+            useRTH,
+            formatDate,
+        )
+        notes.extend(qualification_notes)
+        output_bars = [
+            HistoricalBarModel(
+                time=_format_time(getattr(bar, "date", None)),
+                open=_optional_float(getattr(bar, "open", None)),
+                high=_optional_float(getattr(bar, "high", None)),
+                low=_optional_float(getattr(bar, "low", None)),
+                close=_optional_float(getattr(bar, "close", None)),
+                volume=_optional_float(getattr(bar, "volume", None)),
+                average=_optional_float(getattr(bar, "average", None)),
+                barCount=_optional_int(getattr(bar, "barCount", None)),
+            )
+            for bar in bars
+        ]
+        if not output_bars:
+            notes.append("no historical bars returned")
+        response = HistoricalBarsResponse(bars=output_bars, notes=notes)
+        return response.model_dump()
+
+    return _run_with_client(action)
+
+
+@mcp.tool
+async def ibkr_get_historical_bars(
+    contract: dict,
+    endDateTime: str | None,
+    durationStr: str,
+    barSizeSetting: str,
+    whatToShow: str,
+    useRTH: bool,
+    formatDate: int = 1,
+) -> dict:
+    return await anyio.to_thread.run_sync(
+        _ibkr_get_historical_bars_sync,
+        contract,
+        endDateTime,
+        durationStr,
+        barSizeSetting,
+        whatToShow,
+        useRTH,
+        formatDate,
+    )
+
+
+def _ibkr_get_historical_ticks_sync(
+    contract: dict,
+    startDateTime: str | None,
+    endDateTime: str | None,
+    numberOfTicks: int,
+    whatToShow: str,
+    useRTH: bool,
+    ignoreSize: bool = False,
+) -> dict:
+    def action(client: IBKRClient) -> dict:
+        notes: list[str] = []
+        if whatToShow.strip().upper() != "BID_ASK":
+            notes.append("bid/ask fields are only populated for whatToShow=BID_ASK")
+        if not isinstance(contract, dict):
+            return _error_response("INVALID_ARGUMENT", "contract must be an object", False)
+        try:
+            contract_obj = IBKRClient.contract_from_input(contract)
+        except ValueError as exc:
+            return _error_response("INVALID_ARGUMENT", str(exc), False)
+        ticks, qualification_notes = client.get_historical_ticks(
+            contract_obj,
+            startDateTime or "",
+            endDateTime or "",
+            numberOfTicks,
+            whatToShow,
+            useRTH,
+            ignoreSize,
+        )
+        notes.extend(qualification_notes)
+        output_ticks: list[HistoricalTickModel] = []
+        for tick in ticks:
+            time_value = _format_time(getattr(tick, "time", None))
+            if hasattr(tick, "priceBid") or hasattr(tick, "priceAsk"):
+                output_ticks.append(
+                    HistoricalTickModel(
+                        time=time_value,
+                        priceBid=_optional_float(getattr(tick, "priceBid", None)),
+                        priceAsk=_optional_float(getattr(tick, "priceAsk", None)),
+                        sizeBid=_optional_float(getattr(tick, "sizeBid", None)),
+                        sizeAsk=_optional_float(getattr(tick, "sizeAsk", None)),
+                    )
+                )
+                continue
+            output_ticks.append(
+                HistoricalTickModel(
+                    time=time_value,
+                    price=_optional_float(getattr(tick, "price", None)),
+                    size=_optional_float(getattr(tick, "size", None)),
+                    exchange=getattr(tick, "exchange", None),
+                    specialConditions=getattr(tick, "specialConditions", None),
+                )
+            )
+        if not output_ticks:
+            notes.append("no historical ticks returned")
+        response = HistoricalTicksResponse(ticks=output_ticks, notes=notes)
+        return response.model_dump()
+
+    return _run_with_client(action)
+
+
+@mcp.tool
+async def ibkr_get_historical_ticks(
+    contract: dict,
+    startDateTime: str | None,
+    endDateTime: str | None,
+    numberOfTicks: int,
+    whatToShow: str,
+    useRTH: bool,
+    ignoreSize: bool = False,
+) -> dict:
+    return await anyio.to_thread.run_sync(
+        _ibkr_get_historical_ticks_sync,
+        contract,
+        startDateTime,
+        endDateTime,
+        numberOfTicks,
+        whatToShow,
+        useRTH,
+        ignoreSize,
+    )
+
+
+def _ibkr_get_head_timestamp_sync(
+    contract: dict,
+    whatToShow: str,
+    useRTH: bool,
+    formatDate: int = 1,
+) -> dict:
+    def action(client: IBKRClient) -> dict:
+        notes: list[str] = []
+        if not isinstance(contract, dict):
+            return _error_response("INVALID_ARGUMENT", "contract must be an object", False)
+        try:
+            contract_obj = IBKRClient.contract_from_input(contract)
+        except ValueError as exc:
+            return _error_response("INVALID_ARGUMENT", str(exc), False)
+        timestamp, qualification_notes = client.get_head_timestamp(
+            contract_obj,
+            whatToShow,
+            useRTH,
+            formatDate,
+        )
+        notes.extend(qualification_notes)
+        formatted = _format_time(timestamp)
+        if not formatted:
+            notes.append("head timestamp unavailable")
+        response = HeadTimestampResponse(headTimestamp=formatted, notes=notes)
+        return response.model_dump()
+
+    return _run_with_client(action)
+
+
+@mcp.tool
+async def ibkr_get_head_timestamp(
+    contract: dict,
+    whatToShow: str,
+    useRTH: bool,
+    formatDate: int = 1,
+) -> dict:
+    return await anyio.to_thread.run_sync(
+        _ibkr_get_head_timestamp_sync,
+        contract,
+        whatToShow,
+        useRTH,
+        formatDate,
+    )
+
+
+def _ibkr_get_market_depth_snapshot_sync(
+    contract: dict,
+    numRows: int = 5,
+    isSmartDepth: bool = False,
+) -> dict:
+    def action(client: IBKRClient) -> dict:
+        notes: list[str] = []
+        if not isinstance(contract, dict):
+            return _error_response("INVALID_ARGUMENT", "contract must be an object", False)
+        try:
+            contract_obj = IBKRClient.contract_from_input(contract)
+        except ValueError as exc:
+            return _error_response("INVALID_ARGUMENT", str(exc), False)
+        bids, asks, qualification_notes = client.get_market_depth_snapshot(
+            contract_obj,
+            numRows,
+            isSmartDepth,
+        )
+        notes.extend(qualification_notes)
+        bid_levels = [
+            MarketDepthLevelModel(
+                price=_optional_float(getattr(level, "price", None)),
+                size=_optional_float(getattr(level, "size", None)),
+                marketMaker=getattr(level, "marketMaker", None),
+            )
+            for level in bids
+        ]
+        ask_levels = [
+            MarketDepthLevelModel(
+                price=_optional_float(getattr(level, "price", None)),
+                size=_optional_float(getattr(level, "size", None)),
+                marketMaker=getattr(level, "marketMaker", None),
+            )
+            for level in asks
+        ]
+        if not bid_levels and not ask_levels:
+            notes.append("market depth snapshot empty")
+        response = MarketDepthSnapshotResponse(bids=bid_levels, asks=ask_levels, notes=notes)
+        return response.model_dump()
+
+    return _run_with_client(action)
+
+
+@mcp.tool
+async def ibkr_get_market_depth_snapshot(
+    contract: dict,
+    numRows: int = 5,
+    isSmartDepth: bool = False,
+) -> dict:
+    return await anyio.to_thread.run_sync(
+        _ibkr_get_market_depth_snapshot_sync,
+        contract,
+        numRows,
+        isSmartDepth,
+    )
+
+
+def _ibkr_get_option_chain_sync(
+    underlyingSymbol: str,
+    exchange: str,
+    secType: str,
+    underlyingConId: int,
+) -> dict:
+    def action(client: IBKRClient) -> dict:
+        notes: list[str] = []
+        normalized_exchange = exchange
+        if secType.strip().upper() != "FUT" and exchange:
+            normalized_exchange = ""
+            notes.append("exchange ignored for non-FUT option chain requests")
+        con_id = _optional_int(underlyingConId)
+        if con_id is None:
+            return _error_response("INVALID_ARGUMENT", "underlyingConId must be an integer", False)
+        chains = [
+            OptionChainModel(
+                exchange=getattr(chain, "exchange", None),
+                underlyingConId=_optional_int(getattr(chain, "underlyingConId", None)),
+                tradingClass=getattr(chain, "tradingClass", None),
+                multiplier=getattr(chain, "multiplier", None),
+                expirations=list(getattr(chain, "expirations", []) or []),
+                strikes=list(getattr(chain, "strikes", []) or []),
+            )
+            for chain in client.get_option_chain(
+                underlyingSymbol,
+                normalized_exchange,
+                secType,
+                con_id,
+            )
+        ]
+        if not chains:
+            notes.append("no option chain entries returned")
+        response = OptionChainResponse(chains=chains, notes=notes)
+        return response.model_dump()
+
+    return _run_with_client(action)
+
+
+@mcp.tool
+async def ibkr_get_option_chain(
+    underlyingSymbol: str,
+    exchange: str,
+    secType: str,
+    underlyingConId: int,
+) -> dict:
+    return await anyio.to_thread.run_sync(
+        _ibkr_get_option_chain_sync,
+        underlyingSymbol,
+        exchange,
+        secType,
+        underlyingConId,
+    )
+
+
+def _ibkr_get_news_providers_sync() -> dict:
+    def action(client: IBKRClient) -> dict:
+        notes: list[str] = []
+        providers = [
+            NewsProviderModel(
+                code=getattr(provider, "code", None),
+                name=getattr(provider, "name", None),
+            )
+            for provider in client.get_news_providers()
+        ]
+        if not providers:
+            notes.append("no news providers returned")
+        response = NewsProvidersResponse(providers=providers, notes=notes)
+        return response.model_dump()
+
+    return _run_with_client(action)
+
+
+@mcp.tool
+async def ibkr_get_news_providers() -> dict:
+    return await anyio.to_thread.run_sync(
+        _ibkr_get_news_providers_sync,
+    )
+
+
+def _ibkr_get_historical_news_sync(
+    contract: dict,
+    providerCodes: str,
+    startTime: str,
+    endTime: str,
+    totalResults: int,
+) -> dict:
+    def action(client: IBKRClient) -> dict:
+        notes: list[str] = []
+        requested_providers = {
+            code.strip()
+            for code in (providerCodes or "").split("+")
+            if code.strip()
+        }
+        if requested_providers:
+            try:
+                available = {getattr(p, "code", None) for p in client.get_news_providers()}
+                missing = sorted(code for code in requested_providers if code not in available)
+                if missing:
+                    notes.append(f"not subscribed for providers: {', '.join(missing)}")
+                    response = HistoricalNewsResponse(items=[], notes=notes)
+                    return response.model_dump()
+            except Exception:
+                notes.append("news provider entitlement check failed; proceeding with request")
+        if not isinstance(contract, dict):
+            return _error_response("INVALID_ARGUMENT", "contract must be an object", False)
+        try:
+            contract_obj = IBKRClient.contract_from_input(contract)
+        except ValueError as exc:
+            return _error_response("INVALID_ARGUMENT", str(exc), False)
+        qualified_contract, qualification_notes = client.qualify_contract(contract_obj)
+        notes.extend(qualification_notes)
+        con_id = getattr(qualified_contract, "conId", None) or getattr(contract_obj, "conId", None)
+        if con_id is None:
+            notes.append("contract conId unavailable; historical news not requested")
+            response = HistoricalNewsResponse(items=[], notes=notes)
+            return response.model_dump()
+        items = [
+            HistoricalNewsItemModel(
+                time=_format_time(getattr(item, "time", None)),
+                providerCode=getattr(item, "providerCode", None),
+                articleId=getattr(item, "articleId", None),
+                headline=getattr(item, "headline", None),
+            )
+            for item in client.get_historical_news(
+                con_id,
+                providerCodes,
+                startTime,
+                endTime,
+                totalResults,
+            )
+        ]
+        if not items:
+            notes.append("no historical news returned")
+        response = HistoricalNewsResponse(items=items, notes=notes)
+        return response.model_dump()
+
+    return _run_with_client(action)
+
+
+@mcp.tool
+async def ibkr_get_historical_news(
+    contract: dict,
+    providerCodes: str,
+    startTime: str,
+    endTime: str,
+    totalResults: int,
+) -> dict:
+    return await anyio.to_thread.run_sync(
+        _ibkr_get_historical_news_sync,
+        contract,
+        providerCodes,
+        startTime,
+        endTime,
+        totalResults,
+    )
+
+
+def _ibkr_get_fundamental_data_sync(
+    contract: dict,
+    reportType: str,
+    format: str = "json",
+) -> dict:
+    def action(client: IBKRClient) -> dict:
+        notes: list[str] = []
+        if not isinstance(contract, dict):
+            return _error_response("INVALID_ARGUMENT", "contract must be an object", False)
+        try:
+            contract_obj = IBKRClient.contract_from_input(contract)
+        except ValueError as exc:
+            return _error_response("INVALID_ARGUMENT", str(exc), False)
+        data, qualification_notes = client.get_fundamental_data(contract_obj, reportType)
+        notes.extend(qualification_notes)
+        output: object | None = data
+        if data and format.strip().lower() == "json":
+            try:
+                output = xmltodict.parse(data)
+            except Exception as exc:
+                notes.append(f"xml parse failed; returning raw xml ({exc})")
+        if not data:
+            notes.append("fundamental data unavailable")
+        response = FundamentalDataResponse(report=output, notes=notes)
+        return response.model_dump()
+
+    return _run_with_client(action)
+
+
+@mcp.tool
+async def ibkr_get_fundamental_data(
+    contract: dict,
+    reportType: str,
+    format: str = "json",
+) -> dict:
+    return await anyio.to_thread.run_sync(
+        _ibkr_get_fundamental_data_sync,
+        contract,
+        reportType,
+        format,
+    )
+
+
+def _ibkr_get_scanner_params_sync(format: str = "json") -> dict:
+    def action(client: IBKRClient) -> dict:
+        notes: list[str] = []
+        params = client.get_scanner_params()
+        output: object | None = params
+        if params and format.strip().lower() == "json":
+            try:
+                output = xmltodict.parse(params)
+            except Exception as exc:
+                notes.append(f"xml parse failed; returning raw xml ({exc})")
+        if not params:
+            notes.append("scanner parameters empty")
+        response = ScannerParamsResponse(params=output, notes=notes)
+        return response.model_dump()
+
+    return _run_with_client(action)
+
+
+@mcp.tool
+async def ibkr_get_scanner_params(format: str = "json") -> dict:
+    return await anyio.to_thread.run_sync(
+        _ibkr_get_scanner_params_sync,
+        format,
+    )
+
+
+def _ibkr_get_news_article_sync(
+    providerCode: str,
+    articleId: str,
+) -> dict:
+    def action(client: IBKRClient) -> dict:
+        notes: list[str] = []
+        article = client.get_news_article(providerCode, articleId)
+        response = NewsArticleResponse(
+            articleType=_optional_int(getattr(article, "articleType", None)),
+            articleText=getattr(article, "articleText", None),
+            notes=notes,
+        )
+        return response.model_dump()
+
+    return _run_with_client(action)
+
+
+@mcp.tool
+async def ibkr_get_news_article(
+    providerCode: str,
+    articleId: str,
+) -> dict:
+    return await anyio.to_thread.run_sync(
+        _ibkr_get_news_article_sync,
+        providerCode,
+        articleId,
+    )
+
+
+def _ibkr_run_scanner_sync(subscription: dict) -> dict:
+    def action(client: IBKRClient) -> dict:
+        notes: list[str] = []
+        try:
+            subscription_obj = IBKRClient.scanner_subscription_from_input(subscription)
+        except ValueError as exc:
+            return _error_response("INVALID_ARGUMENT", str(exc), False)
+        results = []
+        for item in client.run_scanner(subscription_obj):
+            details = getattr(item, "contractDetails", None)
+            contract = _contract_model(getattr(details, "contract", None))
+            results.append(
+                ScannerResultModel(
+                    rank=_optional_int(getattr(item, "rank", None)),
+                    contract=contract,
+                    distance=getattr(item, "distance", None),
+                    benchmark=getattr(item, "benchmark", None),
+                    projection=getattr(item, "projection", None),
+                    legsStr=getattr(item, "legsStr", None),
+                    marketName=getattr(details, "marketName", None),
+                    longName=getattr(details, "longName", None),
+                )
+            )
+        if not results:
+            notes.append("scanner returned no results")
+        response = ScannerDataResponse(results=results, notes=notes)
+        return response.model_dump()
+
+    return _run_with_client(action)
+
+
+@mcp.tool
+async def ibkr_run_scanner(subscription: dict) -> dict:
+    return await anyio.to_thread.run_sync(
+        _ibkr_run_scanner_sync,
+        subscription,
     )
 
 

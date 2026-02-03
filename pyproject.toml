@@ -23,6 +23,7 @@ dependencies = [
   "pydantic==2.11.7",
   "tzdata==2025.2",
   "uvicorn==0.35.0",
+  "xmltodict==0.14.2",
 ]
 
 [project.optional-dependencies]

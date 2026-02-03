@@ -3,7 +3,9 @@ fastmcp==2.14.2
 ib_async==2.0.1
 fastapi==0.112.0
 pydantic==2.11.7
+tzdata==2025.2
 uvicorn==0.35.0
+xmltodict==0.14.2
 
 [test]
 pytest==8.2.2
