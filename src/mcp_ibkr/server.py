@@ -1,14 +1,17 @@
 import logging
 import os
 from datetime import datetime
-from typing import Iterable
+from typing import Annotated, Any, Iterable
 from zoneinfo import ZoneInfo
 
 import anyio
+import fastmcp
 from fastapi import FastAPI
 from fastmcp import FastMCP
 from ib_async.objects import ExecutionFilter
 from ib_async import util
+import mcp.types as mcp_types
+from pydantic import BaseModel, Field
 from starlette.responses import JSONResponse
 import uvicorn
 import xmltodict
@@ -60,7 +63,74 @@ from .models import (
 
 logger = logging.getLogger(__name__)
 
-mcp = FastMCP("IBKR MCP")
+def _merge_schema_definitions(*schemas: dict[str, Any]) -> dict[str, Any]:
+    definitions: dict[str, Any] = {}
+    for schema in schemas:
+        definitions.update(schema.get("$defs", {}))
+    return definitions
+
+
+def _combined_output_schema(model: type[BaseModel]) -> dict[str, Any]:
+    success_schema = model.model_json_schema()
+    error_schema = ErrorResponse.model_json_schema()
+    definitions = _merge_schema_definitions(success_schema, error_schema)
+    success_schema.pop("$defs", None)
+    error_schema.pop("$defs", None)
+    combined: dict[str, Any] = {
+        "type": "object",
+        "anyOf": [success_schema, error_schema],
+    }
+    if definitions:
+        combined["$defs"] = definitions
+    return combined
+
+
+class IbkrMCP(FastMCP):
+    async def _call_tool_mcp(
+        self, key: str, arguments: dict[str, Any]
+    ) -> (
+        list[mcp_types.ContentBlock]
+        | tuple[list[mcp_types.ContentBlock], dict[str, Any]]
+        | mcp_types.CallToolResult
+    ):
+        result = await super()._call_tool_mcp(key, arguments)
+        if isinstance(result, mcp_types.CallToolResult):
+            if isinstance(result.structuredContent, dict) and "error" in result.structuredContent:
+                return result.model_copy(update={"isError": True})
+            return result
+        if isinstance(result, tuple) and len(result) == 2:
+            content, structured_content = result
+            if isinstance(structured_content, dict) and "error" in structured_content:
+                return mcp_types.CallToolResult(
+                    content=list(content),
+                    structuredContent=structured_content,
+                    isError=True,
+                )
+        return result
+
+    async def _list_tools_mcp(
+        self, request: mcp_types.ListToolsRequest | None = None
+    ) -> mcp_types.ListToolsResult:
+        logger.debug("[%s] Handler called: list_tools", self.name)
+        async with fastmcp.server.context.Context(fastmcp=self):
+            cursor = None
+            if request and request.params:
+                cursor = request.params.cursor
+            if cursor not in (None, "", "0"):
+                return mcp_types.ListToolsResult(tools=[], nextCursor=None)
+
+            tools = await self._list_tools_middleware()
+            mcp_tools = [
+                tool.to_mcp_tool(
+                    name=tool.key,
+                    include_fastmcp_meta=self.include_fastmcp_meta,
+                )
+                for tool in tools
+            ]
+            return mcp_types.ListToolsResult(tools=mcp_tools, nextCursor=None)
+
+
+mcp = IbkrMCP("IBKR MCP")
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -148,6 +218,168 @@ def _position_from_snapshot(snapshot: object) -> PositionModel:
 def create_client() -> IBKRClient:
     return IBKRClient.from_env()
 
+
+AccountId = Annotated[
+    str | None,
+    Field(
+        description=(
+            "IBKR account ID. Defaults to IBKR_ACCOUNT or the first managed account."
+        )
+    ),
+]
+OptionalAccountId = Annotated[
+    str | None,
+    Field(description="Optional IBKR account ID filter."),
+]
+IncludePnl = Annotated[
+    bool,
+    Field(description="Whether to compute best-effort P&L and totals."),
+]
+AsOfTimestamp = Annotated[
+    str | None,
+    Field(description="ISO-8601 timestamp override for the response."),
+]
+IncludeAll = Annotated[
+    bool,
+    Field(description="Whether to include open orders from all accounts."),
+]
+QueryText = Annotated[str, Field(description="Symbol or name to search for.")]
+ContractInput = Annotated[
+    dict,
+    Field(
+        description=(
+            "Contract fields such as symbol, secType, exchange, currency, conId, "
+            "and primaryExchange."
+        )
+    ),
+]
+ContractsInput = Annotated[
+    list[dict],
+    Field(description="List of contract objects."),
+]
+RegulatorySnapshot = Annotated[
+    bool,
+    Field(description="Request a regulatory snapshot (may incur fees)."),
+]
+EndDateTime = Annotated[
+    str | None,
+    Field(description="IB-formatted end date/time (e.g., '20240102 16:00:00')."),
+]
+DurationStr = Annotated[
+    str,
+    Field(description="IB duration string (e.g., '1 D', '2 W')."),
+]
+BarSizeSetting = Annotated[
+    str,
+    Field(description="IB bar size setting (e.g., '1 hour', '1 day')."),
+]
+WhatToShow = Annotated[
+    str,
+    Field(description="IB data type (e.g., TRADES, MIDPOINT, BID_ASK)."),
+]
+UseRth = Annotated[
+    bool,
+    Field(description="Whether to use regular trading hours only."),
+]
+FormatDate = Annotated[
+    int,
+    Field(description="IB formatDate flag (1 for human-readable timestamps)."),
+]
+StartDateTime = Annotated[
+    str | None,
+    Field(description="IB-formatted start date/time."),
+]
+NumberOfTicks = Annotated[
+    int,
+    Field(description="Number of ticks to request."),
+]
+IgnoreSize = Annotated[
+    bool,
+    Field(description="Ignore size in historical tick request."),
+]
+NumRows = Annotated[
+    int,
+    Field(description="Number of market depth rows to request."),
+]
+IsSmartDepth = Annotated[
+    bool,
+    Field(description="Whether to request SMART market depth."),
+]
+UnderlyingSymbol = Annotated[
+    str,
+    Field(description="Underlying symbol for the option chain."),
+]
+Exchange = Annotated[
+    str,
+    Field(description="Exchange for the request (ignored for non-FUT option chains)."),
+]
+ExecutionExchange = Annotated[
+    str | None,
+    Field(description="Execution exchange filter."),
+]
+SecType = Annotated[
+    str,
+    Field(description="IB security type (e.g., STK, OPT, FUT)."),
+]
+OptionalSecType = Annotated[
+    str | None,
+    Field(description="IB security type filter (e.g., STK, OPT, FUT)."),
+]
+UnderlyingConId = Annotated[
+    int,
+    Field(description="Underlying conId for the option chain."),
+]
+ProviderCodes = Annotated[
+    str,
+    Field(description="Plus-delimited provider codes (e.g., 'BZ+DJ')."),
+]
+ProviderCode = Annotated[
+    str,
+    Field(description="News provider code (e.g., 'BZ')."),
+]
+StartTime = Annotated[
+    str,
+    Field(description="IB-formatted start time (e.g., '20240101 00:00:00')."),
+]
+EndTime = Annotated[
+    str,
+    Field(description="IB-formatted end time (e.g., '20240102 00:00:00')."),
+]
+TotalResults = Annotated[
+    int,
+    Field(description="Maximum number of results to return."),
+]
+ReportType = Annotated[
+    str,
+    Field(description="IB fundamentals report type (e.g., ReportSnapshot)."),
+]
+ResponseFormat = Annotated[
+    str,
+    Field(description="Output format: json (default) or xml."),
+]
+MarketDataType = Annotated[
+    int | None,
+    Field(description="IB market data type override."),
+]
+ForceSmart = Annotated[
+    bool,
+    Field(description="Force a SMART+primaryExchange retry in debug snapshot."),
+]
+ScannerSubscription = Annotated[
+    dict,
+    Field(
+        description=(
+            "Scanner subscription object (instrument, locationCode, scanCode, etc.)."
+        )
+    ),
+]
+Symbol = Annotated[str | None, Field(description="Symbol filter for executions.")]
+ExecutionSide = Annotated[
+    str | None, Field(description="Execution side filter (BOT/SLD).")
+]
+ExecutionTime = Annotated[
+    str | None, Field(description="Execution time filter string.")
+]
 
 def _error_response(
     error_type: str,
@@ -261,11 +493,15 @@ def _ibkr_get_portfolio_sync(
     return _run_with_client(action)
 
 
-@mcp.tool
+@mcp.tool(
+    title="Get Portfolio",
+    description="Return positions and best-effort P&L for an IBKR account.",
+    output_schema=_combined_output_schema(PortfolioResponse),
+)
 async def ibkr_get_portfolio(
-    account: str | None = None,
-    include_pnl: bool = True,
-    as_of: str | None = None,
+    account: AccountId = None,
+    include_pnl: IncludePnl = True,
+    as_of: AsOfTimestamp = None,
 ) -> dict:
     return await anyio.to_thread.run_sync(
         _ibkr_get_portfolio_sync,
@@ -297,8 +533,12 @@ def _ibkr_get_account_summary_sync(account: str | None = None) -> dict:
     return _run_with_client(action)
 
 
-@mcp.tool
-async def ibkr_get_account_summary(account: str | None = None) -> dict:
+@mcp.tool(
+    title="Get Account Summary",
+    description="Return account summary values such as NetLiquidation and BuyingPower.",
+    output_schema=_combined_output_schema(AccountSummaryResponse),
+)
+async def ibkr_get_account_summary(account: AccountId = None) -> dict:
     return await anyio.to_thread.run_sync(
         _ibkr_get_account_summary_sync,
         account,
@@ -328,8 +568,12 @@ def _ibkr_get_account_values_sync(account: str | None = None) -> dict:
     return _run_with_client(action)
 
 
-@mcp.tool
-async def ibkr_get_account_values(account: str | None = None) -> dict:
+@mcp.tool(
+    title="Get Account Values",
+    description="Return account values snapshot for the specified account.",
+    output_schema=_combined_output_schema(AccountValuesResponse),
+)
+async def ibkr_get_account_values(account: AccountId = None) -> dict:
     return await anyio.to_thread.run_sync(
         _ibkr_get_account_values_sync,
         account,
@@ -369,10 +613,14 @@ def _ibkr_get_open_orders_sync(
     return _run_with_client(action)
 
 
-@mcp.tool
+@mcp.tool(
+    title="Get Open Orders",
+    description="Return open orders with contract details and status.",
+    output_schema=_combined_output_schema(OpenOrdersResponse),
+)
 async def ibkr_get_open_orders(
-    account: str | None = None,
-    include_all: bool = True,
+    account: OptionalAccountId = None,
+    include_all: IncludeAll = True,
 ) -> dict:
     return await anyio.to_thread.run_sync(
         _ibkr_get_open_orders_sync,
@@ -423,14 +671,18 @@ def _ibkr_get_executions_sync(
     return _run_with_client(action)
 
 
-@mcp.tool
+@mcp.tool(
+    title="Get Executions",
+    description="Return executions/fills matching the provided filters.",
+    output_schema=_combined_output_schema(ExecutionsResponse),
+)
 async def ibkr_get_executions(
-    account: str | None = None,
-    symbol: str | None = None,
-    secType: str | None = None,
-    exchange: str | None = None,
-    side: str | None = None,
-    time: str | None = None,
+    account: OptionalAccountId = None,
+    symbol: Symbol = None,
+    secType: OptionalSecType = None,
+    exchange: ExecutionExchange = None,
+    side: ExecutionSide = None,
+    time: ExecutionTime = None,
 ) -> dict:
     return await anyio.to_thread.run_sync(
         _ibkr_get_executions_sync,
@@ -467,8 +719,12 @@ def _ibkr_search_symbols_sync(query: str) -> dict:
     return _run_with_client(action)
 
 
-@mcp.tool
-async def ibkr_search_symbols(query: str) -> dict:
+@mcp.tool(
+    title="Search Symbols",
+    description="Search for symbols and matching contracts.",
+    output_schema=_combined_output_schema(SymbolMatchesResponse),
+)
+async def ibkr_search_symbols(query: QueryText) -> dict:
     return await anyio.to_thread.run_sync(
         _ibkr_search_symbols_sync,
         query,
@@ -515,8 +771,12 @@ def _ibkr_get_contract_details_sync(contract: dict) -> dict:
     return _run_with_client(action)
 
 
-@mcp.tool
-async def ibkr_get_contract_details(contract: dict) -> dict:
+@mcp.tool(
+    title="Get Contract Details",
+    description="Return contract details for a given contract input.",
+    output_schema=_combined_output_schema(ContractDetailsResponse),
+)
+async def ibkr_get_contract_details(contract: ContractInput) -> dict:
     return await anyio.to_thread.run_sync(
         _ibkr_get_contract_details_sync,
         contract,
@@ -570,10 +830,14 @@ def _ibkr_get_market_data_snapshot_sync(
     return _run_with_client(action)
 
 
-@mcp.tool
+@mcp.tool(
+    title="Get Market Data Snapshot",
+    description="Return a one-shot market data snapshot for contracts.",
+    output_schema=_combined_output_schema(MarketDataSnapshotResponse),
+)
 async def ibkr_get_market_data_snapshot(
-    contracts: list[dict],
-    regulatory_snapshot: bool = False,
+    contracts: ContractsInput,
+    regulatory_snapshot: RegulatorySnapshot = False,
 ) -> dict:
     return await anyio.to_thread.run_sync(
         _ibkr_get_market_data_snapshot_sync,
@@ -630,15 +894,19 @@ def _ibkr_get_historical_bars_sync(
     return _run_with_client(action)
 
 
-@mcp.tool
+@mcp.tool(
+    title="Get Historical Bars",
+    description="Return historical OHLCV bars for a contract.",
+    output_schema=_combined_output_schema(HistoricalBarsResponse),
+)
 async def ibkr_get_historical_bars(
-    contract: dict,
-    endDateTime: str | None,
-    durationStr: str,
-    barSizeSetting: str,
-    whatToShow: str,
-    useRTH: bool,
-    formatDate: int = 1,
+    contract: ContractInput,
+    endDateTime: EndDateTime,
+    durationStr: DurationStr,
+    barSizeSetting: BarSizeSetting,
+    whatToShow: WhatToShow,
+    useRTH: UseRth,
+    formatDate: FormatDate = 1,
 ) -> dict:
     return await anyio.to_thread.run_sync(
         _ibkr_get_historical_bars_sync,
@@ -712,15 +980,19 @@ def _ibkr_get_historical_ticks_sync(
     return _run_with_client(action)
 
 
-@mcp.tool
+@mcp.tool(
+    title="Get Historical Ticks",
+    description="Return historical ticks for a contract.",
+    output_schema=_combined_output_schema(HistoricalTicksResponse),
+)
 async def ibkr_get_historical_ticks(
-    contract: dict,
-    startDateTime: str | None,
-    endDateTime: str | None,
-    numberOfTicks: int,
-    whatToShow: str,
-    useRTH: bool,
-    ignoreSize: bool = False,
+    contract: ContractInput,
+    startDateTime: StartDateTime,
+    endDateTime: EndDateTime,
+    numberOfTicks: NumberOfTicks,
+    whatToShow: WhatToShow,
+    useRTH: UseRth,
+    ignoreSize: IgnoreSize = False,
 ) -> dict:
     return await anyio.to_thread.run_sync(
         _ibkr_get_historical_ticks_sync,
@@ -764,12 +1036,16 @@ def _ibkr_get_head_timestamp_sync(
     return _run_with_client(action)
 
 
-@mcp.tool
+@mcp.tool(
+    title="Get Head Timestamp",
+    description="Return the earliest available historical data timestamp.",
+    output_schema=_combined_output_schema(HeadTimestampResponse),
+)
 async def ibkr_get_head_timestamp(
-    contract: dict,
-    whatToShow: str,
-    useRTH: bool,
-    formatDate: int = 1,
+    contract: ContractInput,
+    whatToShow: WhatToShow,
+    useRTH: UseRth,
+    formatDate: FormatDate = 1,
 ) -> dict:
     return await anyio.to_thread.run_sync(
         _ibkr_get_head_timestamp_sync,
@@ -823,11 +1099,15 @@ def _ibkr_get_market_depth_snapshot_sync(
     return _run_with_client(action)
 
 
-@mcp.tool
+@mcp.tool(
+    title="Get Market Depth Snapshot",
+    description="Return a one-shot market depth (L2) snapshot.",
+    output_schema=_combined_output_schema(MarketDepthSnapshotResponse),
+)
 async def ibkr_get_market_depth_snapshot(
-    contract: dict,
-    numRows: int = 5,
-    isSmartDepth: bool = False,
+    contract: ContractInput,
+    numRows: NumRows = 5,
+    isSmartDepth: IsSmartDepth = False,
 ) -> dict:
     return await anyio.to_thread.run_sync(
         _ibkr_get_market_depth_snapshot_sync,
@@ -876,12 +1156,16 @@ def _ibkr_get_option_chain_sync(
     return _run_with_client(action)
 
 
-@mcp.tool
+@mcp.tool(
+    title="Get Option Chain",
+    description="Return option chain metadata for an underlying.",
+    output_schema=_combined_output_schema(OptionChainResponse),
+)
 async def ibkr_get_option_chain(
-    underlyingSymbol: str,
-    exchange: str,
-    secType: str,
-    underlyingConId: int,
+    underlyingSymbol: UnderlyingSymbol,
+    exchange: Exchange,
+    secType: SecType,
+    underlyingConId: UnderlyingConId,
 ) -> dict:
     return await anyio.to_thread.run_sync(
         _ibkr_get_option_chain_sync,
@@ -910,7 +1194,11 @@ def _ibkr_get_news_providers_sync() -> dict:
     return _run_with_client(action)
 
 
-@mcp.tool
+@mcp.tool(
+    title="Get News Providers",
+    description="Return available news provider codes and names.",
+    output_schema=_combined_output_schema(NewsProvidersResponse),
+)
 async def ibkr_get_news_providers() -> dict:
     return await anyio.to_thread.run_sync(
         _ibkr_get_news_providers_sync,
@@ -977,13 +1265,17 @@ def _ibkr_get_historical_news_sync(
     return _run_with_client(action)
 
 
-@mcp.tool
+@mcp.tool(
+    title="Get Historical News",
+    description="Return historical news headlines for a contract.",
+    output_schema=_combined_output_schema(HistoricalNewsResponse),
+)
 async def ibkr_get_historical_news(
-    contract: dict,
-    providerCodes: str,
-    startTime: str,
-    endTime: str,
-    totalResults: int,
+    contract: ContractInput,
+    providerCodes: ProviderCodes,
+    startTime: StartTime,
+    endTime: EndTime,
+    totalResults: TotalResults,
 ) -> dict:
     return await anyio.to_thread.run_sync(
         _ibkr_get_historical_news_sync,
@@ -1024,11 +1316,15 @@ def _ibkr_get_fundamental_data_sync(
     return _run_with_client(action)
 
 
-@mcp.tool
+@mcp.tool(
+    title="Get Fundamental Data",
+    description="Return a fundamentals report for a contract.",
+    output_schema=_combined_output_schema(FundamentalDataResponse),
+)
 async def ibkr_get_fundamental_data(
-    contract: dict,
-    reportType: str,
-    format: str = "json",
+    contract: ContractInput,
+    reportType: ReportType,
+    format: ResponseFormat = "json",
 ) -> dict:
     return await anyio.to_thread.run_sync(
         _ibkr_get_fundamental_data_sync,
@@ -1056,8 +1352,12 @@ def _ibkr_get_scanner_params_sync(format: str = "json") -> dict:
     return _run_with_client(action)
 
 
-@mcp.tool
-async def ibkr_get_scanner_params(format: str = "json") -> dict:
+@mcp.tool(
+    title="Get Scanner Params",
+    description="Return market scanner parameter definitions.",
+    output_schema=_combined_output_schema(ScannerParamsResponse),
+)
+async def ibkr_get_scanner_params(format: ResponseFormat = "json") -> dict:
     return await anyio.to_thread.run_sync(
         _ibkr_get_scanner_params_sync,
         format,
@@ -1081,10 +1381,14 @@ def _ibkr_get_news_article_sync(
     return _run_with_client(action)
 
 
-@mcp.tool
+@mcp.tool(
+    title="Get News Article",
+    description="Return a news article body for a provider/article id.",
+    output_schema=_combined_output_schema(NewsArticleResponse),
+)
 async def ibkr_get_news_article(
-    providerCode: str,
-    articleId: str,
+    providerCode: ProviderCode,
+    articleId: Annotated[str, Field(description="News article identifier.")],
 ) -> dict:
     return await anyio.to_thread.run_sync(
         _ibkr_get_news_article_sync,
@@ -1124,8 +1428,12 @@ def _ibkr_run_scanner_sync(subscription: dict) -> dict:
     return _run_with_client(action)
 
 
-@mcp.tool
-async def ibkr_run_scanner(subscription: dict) -> dict:
+@mcp.tool(
+    title="Run Scanner",
+    description="Run a market scanner subscription and return ranked results.",
+    output_schema=_combined_output_schema(ScannerDataResponse),
+)
+async def ibkr_run_scanner(subscription: ScannerSubscription) -> dict:
     return await anyio.to_thread.run_sync(
         _ibkr_run_scanner_sync,
         subscription,
@@ -1206,12 +1514,16 @@ def _ibkr_debug_market_data_snapshot_sync(
     return _run_with_client(action)
 
 
-@mcp.tool
+@mcp.tool(
+    title="Debug Market Data Snapshot",
+    description="Return diagnostic market data snapshots for a contract.",
+    output_schema=_combined_output_schema(MarketDataSnapshotDebugResponse),
+)
 async def ibkr_debug_market_data_snapshot(
-    contract: dict,
-    regulatory_snapshot: bool = False,
-    market_data_type: int | None = None,
-    force_smart: bool = True,
+    contract: ContractInput,
+    regulatory_snapshot: RegulatorySnapshot = False,
+    market_data_type: MarketDataType = None,
+    force_smart: ForceSmart = True,
 ) -> dict:
     return await anyio.to_thread.run_sync(
         _ibkr_debug_market_data_snapshot_sync,

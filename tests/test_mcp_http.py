@@ -1,6 +1,7 @@
 from fastapi.testclient import TestClient
 import anyio
 
+import mcp.types as mcp_types
 from mcp_ibkr import server
 from mcp_ibkr.ibkr_client import IBKRConnectionError
 
@@ -91,6 +92,26 @@ def test_tools_list_accepts_json_only():
     assert expected.issubset(tool_names)
 
 
+def test_tools_list_includes_metadata_and_schemas():
+    app = server.create_app()
+    with TestClient(app) as client:
+        response = _post_mcp(
+            client,
+            {"jsonrpc": "2.0", "id": 10, "method": "tools/list", "params": {}},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    mcp_types.ListToolsResult.model_validate(payload["result"])
+    tools = payload["result"]["tools"]
+    portfolio_tool = next(tool for tool in tools if tool["name"] == "ibkr_get_portfolio")
+
+    assert portfolio_tool["title"]
+    assert portfolio_tool["description"]
+    assert portfolio_tool["inputSchema"]["properties"]["account"]["description"]
+    assert portfolio_tool["outputSchema"]["type"] == "object"
+
+
 def test_tools_call_returns_structured_content(monkeypatch, sample_positions, sample_pnl_result):
     stub = StubClient(sample_positions, sample_pnl_result)
     monkeypatch.setattr(server, "create_client", lambda: stub)
@@ -114,6 +135,35 @@ def test_tools_call_returns_structured_content(monkeypatch, sample_positions, sa
     assert result["structuredContent"]["account"] == "U1234567"
     assert result["structuredContent"]["positions"]
 
+
+def test_tools_call_error_sets_is_error(monkeypatch):
+    class FailingClient:
+        def connect(self) -> None:
+            raise IBKRConnectionError("tws not reachable")
+
+        def disconnect(self) -> None:
+            return None
+
+    monkeypatch.setattr(server, "create_client", lambda: FailingClient())
+
+    app = server.create_app()
+    with TestClient(app) as client:
+        response = _post_mcp(
+            client,
+            {
+                "jsonrpc": "2.0",
+                "id": 4,
+                "method": "tools/call",
+                "params": {"name": "ibkr_get_portfolio", "arguments": {}},
+            },
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    mcp_types.CallToolResult.model_validate(payload["result"])
+    result = payload["result"]
+    assert result["isError"] is True
+    assert result["structuredContent"]["error"]["type"] == "TWS_CONNECTION_FAILED"
 
 def test_tools_call_include_pnl_false_skips_pnl(monkeypatch, sample_positions):
     stub = PnlForbiddenClient(sample_positions)
