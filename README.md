@@ -86,6 +86,11 @@ curl -s http://localhost:${MCP_PORT:-8000}/mcp \
 
 Batch 2 tool examples: `docs/batch2_examples.md`.
 
+## Schemas and Errors
+`tools/list` includes `title`, `description`, `inputSchema`, and `outputSchema` for every tool. Input schemas include per-parameter descriptions, and output schemas describe the structured response payloads.
+
+`tools/call` returns structured content that matches each tool's `outputSchema`. When a tool returns an error payload, the server sets `isError=true` and includes the structured `error` object in `structuredContent`.
+
 ## Register MCP Server with Codex
 ```
 codex mcp add ibkr-portfolio \
