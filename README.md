@@ -84,8 +84,6 @@ curl -s http://localhost:${MCP_PORT:-8000}/mcp \
 - `ibkr_get_scanner_params`: Scanner parameters (JSON by default, XML optional).
 - `ibkr_run_scanner`: Run a market scanner subscription and return ranked results.
 
-Batch 2 tool examples: `docs/batch2_examples.md`.
-
 ## Schemas and Errors
 `tools/list` includes `title`, `description`, `inputSchema`, and `outputSchema` for every tool. Input schemas include per-parameter descriptions, and output schemas describe the structured response payloads.
 
