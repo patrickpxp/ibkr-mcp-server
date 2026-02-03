@@ -252,3 +252,157 @@ class MarketDataSnapshotDebugResponse(BaseModel):
 
     attempts: list[MarketDataSnapshotAttempt]
     notes: list[str]
+
+
+class HistoricalBarModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    time: Optional[str] = None
+    open: Optional[float] = None
+    high: Optional[float] = None
+    low: Optional[float] = None
+    close: Optional[float] = None
+    volume: Optional[float] = None
+    average: Optional[float] = None
+    barCount: Optional[int] = None
+
+
+class HistoricalBarsResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    bars: list[HistoricalBarModel]
+    notes: list[str]
+
+
+class HistoricalTickModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    time: Optional[str] = None
+    price: Optional[float] = None
+    size: Optional[float] = None
+    priceBid: Optional[float] = None
+    priceAsk: Optional[float] = None
+    sizeBid: Optional[float] = None
+    sizeAsk: Optional[float] = None
+    exchange: Optional[str] = None
+    specialConditions: Optional[str] = None
+
+
+class HistoricalTicksResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    ticks: list[HistoricalTickModel]
+    notes: list[str]
+
+
+class HeadTimestampResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    headTimestamp: Optional[str] = None
+    notes: list[str]
+
+
+class MarketDepthLevelModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    price: Optional[float] = None
+    size: Optional[float] = None
+    marketMaker: Optional[str] = None
+
+
+class MarketDepthSnapshotResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    bids: list[MarketDepthLevelModel]
+    asks: list[MarketDepthLevelModel]
+    notes: list[str]
+
+
+class OptionChainModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    exchange: Optional[str] = None
+    underlyingConId: Optional[int] = None
+    tradingClass: Optional[str] = None
+    multiplier: Optional[str] = None
+    expirations: list[str]
+    strikes: list[float]
+
+
+class OptionChainResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    chains: list[OptionChainModel]
+    notes: list[str]
+
+
+class NewsProviderModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    code: Optional[str] = None
+    name: Optional[str] = None
+
+
+class NewsProvidersResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    providers: list[NewsProviderModel]
+    notes: list[str]
+
+
+class HistoricalNewsItemModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    time: Optional[str] = None
+    providerCode: Optional[str] = None
+    articleId: Optional[str] = None
+    headline: Optional[str] = None
+
+
+class HistoricalNewsResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[HistoricalNewsItemModel]
+    notes: list[str]
+
+
+class FundamentalDataResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    report: Optional[Any] = None
+    notes: list[str]
+
+
+class ScannerParamsResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    params: Optional[Any] = None
+    notes: list[str]
+
+
+class ScannerResultModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    rank: Optional[int] = None
+    contract: ContractModel
+    distance: Optional[str] = None
+    benchmark: Optional[str] = None
+    projection: Optional[str] = None
+    legsStr: Optional[str] = None
+    marketName: Optional[str] = None
+    longName: Optional[str] = None
+
+
+class ScannerDataResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    results: list[ScannerResultModel]
+    notes: list[str]
+
+
+class NewsArticleResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    articleType: Optional[int] = None
+    articleText: Optional[str] = None
+    notes: list[str]

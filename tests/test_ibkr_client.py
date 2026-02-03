@@ -185,3 +185,24 @@ def test_get_pnl_best_effort_notes_account_summary_failure(monkeypatch):
 
     assert any("account summary unavailable" in note for note in result.notes)
     assert result.totals.netLiquidation is None
+
+
+def test_get_historical_news_handles_none(monkeypatch):
+    client = IBKRClient(host="127.0.0.1", port=7497, client_id=1, timeout_seconds=1)
+
+    class _StubIB:
+        def reqHistoricalNewsAsync(self, *args, **kwargs):
+            return "dummy"
+
+    client.ib = _StubIB()
+    monkeypatch.setattr("mcp_ibkr.ibkr_client.util.run", lambda *args, **kwargs: None)
+
+    result = client.get_historical_news(
+        123,
+        "BZ",
+        "20240101 00:00:00",
+        "20240102 00:00:00",
+        25,
+    )
+
+    assert result == []
