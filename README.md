@@ -14,6 +14,8 @@ In TWS, enable API access and allow local connections.
 
 ![TWS API Settings](https://interactivebrokers.github.io/tws-api/tws_allow_connections.png)
 
+This setup expects TWS/IB Gateway to be running on the same machine as the Docker host.
+
 ## Installation
 ```
 git clone https://github.com/patrickpxp/ibkr-mcp-server
@@ -23,12 +25,12 @@ cd ibkr-mcp-server
 ## Configuration
 Create `.env` (ignored by git) as needed:
 ```
-IBKR_HOST=host.docker.internal
-IBKR_PORT=7497 # paper trading port, use 7496 for live trading
+IBKR_HOST=host.docker.internal # from the container, this reaches the host TWS/IB Gateway; 127.0.0.1 would point to the container itself
+IBKR_PORT=7496 # live trading port (paper is 7497)
 IBKR_CLIENT_ID=123
 IBKR_ACCOUNT=
 IBKR_TIMEOUT_SECONDS=10
-MCP_BIND_HOST=0.0.0.0
+MCP_BIND_HOST=0.0.0.0 # bind all interfaces so Docker port mapping is reachable; 127.0.0.1 would be container-only
 MCP_PORT=8000
 MCP_JSON_RESPONSE=true
 MCP_STATELESS_HTTP=true
@@ -43,8 +45,6 @@ HTTP/session behavior when needed.
 docker compose up -d --build
 ```
 
-Ensure TWS or IB Gateway has API access enabled and is listening on the configured port.
-
 ## Health Check
 ```
 curl http://localhost:${MCP_PORT:-8000}/health
@@ -57,7 +57,8 @@ Expected response:
 
 ## MCP Tool Invocation Example
 ```
-curl -s http://localhost:${MCP_PORT:-8000}/mcp \
+curl -s -X POST http://localhost:${MCP_PORT:-8000}/mcp \
+  -H 'Accept: application/json' \
   -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"ibkr_get_portfolio","arguments":{}}}'
 ```
