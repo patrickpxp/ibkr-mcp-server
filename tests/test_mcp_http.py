@@ -88,6 +88,13 @@ def test_tools_list_accepts_json_only():
         "ibkr_get_fundamental_data",
         "ibkr_get_scanner_params",
         "ibkr_run_scanner",
+        "ibkr_preview_order",
+        "ibkr_place_order",
+        "ibkr_cancel_order",
+        "ibkr_global_cancel",
+        "ibkr_bracket_order",
+        "ibkr_oca_group",
+        "ibkr_exercise_options",
     }
     assert expected.issubset(tool_names)
 
@@ -208,3 +215,36 @@ def test_disconnect_called_on_connect_error(monkeypatch):
 
     assert response["error"]["type"] == "TWS_CONNECTION_FAILED"
     assert client.disconnected is True
+
+
+def test_trading_confirmation_error_sets_is_error(monkeypatch):
+    class TradingStubClient:
+        def connect(self) -> None:
+            return None
+
+        def disconnect(self) -> None:
+            return None
+
+    monkeypatch.setattr(server, "create_client", lambda: TradingStubClient())
+    monkeypatch.setenv("IBKR_ENABLE_TRADING", "true")
+
+    app = server.create_app()
+    with TestClient(app) as client:
+        response = _post_mcp(
+            client,
+            {
+                "jsonrpc": "2.0",
+                "id": 11,
+                "method": "tools/call",
+                "params": {
+                    "name": "ibkr_cancel_order",
+                    "arguments": {"orderId": 12345, "confirm": False},
+                },
+            },
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    result = payload["result"]
+    assert result["isError"] is True
+    assert result["structuredContent"]["error"]["type"] == "CONFIRM_REQUIRED"

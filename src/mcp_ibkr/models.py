@@ -406,3 +406,91 @@ class NewsArticleResponse(BaseModel):
     articleType: Optional[int] = None
     articleText: Optional[str] = None
     notes: list[str]
+
+
+class OrderStateModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: Optional[str] = None
+    initMarginBefore: Optional[str] = None
+    maintMarginBefore: Optional[str] = None
+    equityWithLoanBefore: Optional[str] = None
+    initMarginChange: Optional[str] = None
+    maintMarginChange: Optional[str] = None
+    equityWithLoanChange: Optional[str] = None
+    initMarginAfter: Optional[str] = None
+    maintMarginAfter: Optional[str] = None
+    equityWithLoanAfter: Optional[str] = None
+    commission: Optional[float] = None
+    minCommission: Optional[float] = None
+    maxCommission: Optional[float] = None
+    commissionCurrency: Optional[str] = None
+    warningText: Optional[str] = None
+    completedTime: Optional[str] = None
+    completedStatus: Optional[str] = None
+
+
+class TradeSnapshotModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    contract: dict[str, Any]
+    order: dict[str, Any]
+    orderStatus: dict[str, Any]
+    fills: list[dict[str, Any]]
+    log: list[dict[str, Any]]
+    advancedError: Optional[str] = None
+    isDone: Optional[bool] = None
+
+
+class PreviewOrderResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    orderState: Optional[OrderStateModel] = None
+    notes: list[str]
+
+
+class PlaceOrderResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    trade: Optional[TradeSnapshotModel] = None
+    notes: list[str]
+
+
+class CancelOrderResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    orderId: int
+    trade: Optional[TradeSnapshotModel] = None
+    notes: list[str]
+
+
+class GlobalCancelResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: str
+    notes: list[str]
+
+
+class BracketOrderResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    orderIds: list[int]
+    trades: list[TradeSnapshotModel]
+    notes: list[str]
+
+
+class OcaGroupResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    ocaGroup: str
+    ocaType: int
+    orderIds: list[int]
+    trades: list[TradeSnapshotModel]
+    notes: list[str]
+
+
+class ExerciseOptionsResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: str
+    notes: list[str]

@@ -206,3 +206,72 @@ def test_get_historical_news_handles_none(monkeypatch):
     )
 
     assert result == []
+
+
+def test_order_from_input_defaults_transmit_false():
+    order = IBKRClient.order_from_input(
+        {"action": "BUY", "totalQuantity": 10, "orderType": "MKT"},
+        default_transmit=False,
+    )
+    assert order.transmit is False
+
+
+def test_order_from_input_requires_fields():
+    with pytest.raises(ValueError):
+        IBKRClient.order_from_input({"action": "BUY", "totalQuantity": 10})
+
+
+def test_create_bracket_orders_transmit_flags():
+    client = IBKRClient(host="127.0.0.1", port=7497, client_id=1, timeout_seconds=1)
+
+    class _ReqIdClient:
+        def __init__(self):
+            self.req_id = 100
+
+        def getReqId(self):
+            self.req_id += 1
+            return self.req_id
+
+    class _StubBracketIB:
+        def __init__(self):
+            self.client = _ReqIdClient()
+
+    client.ib = _StubBracketIB()
+
+    staged = client.create_bracket_orders("BUY", 1, 100.0, 105.0, 95.0, transmit=False)
+    assert [order.transmit for order in staged] == [False, False, False]
+
+    live = client.create_bracket_orders("BUY", 1, 100.0, 105.0, 95.0, transmit=True)
+    assert [order.transmit for order in live] == [False, False, True]
+
+
+def test_preview_order_forces_transmit_true(monkeypatch):
+    client = IBKRClient(host="127.0.0.1", port=7497, client_id=1, timeout_seconds=1)
+
+    class _StubIB:
+        def __init__(self):
+            self.seen_order = None
+
+        def whatIfOrderAsync(self, contract, order):
+            self.seen_order = order
+            return "dummy_future"
+
+    stub_ib = _StubIB()
+    client.ib = stub_ib
+    monkeypatch.setattr(client, "qualify_contract", lambda contract: (contract, []))
+    monkeypatch.setattr("mcp_ibkr.ibkr_client.util.run", lambda *args, **kwargs: object())
+
+    contract = IBKRClient.contract_from_input(
+        {"symbol": "AAPL", "secType": "STK", "exchange": "SMART", "currency": "USD"}
+    )
+    order = IBKRClient.order_from_input(
+        {"action": "BUY", "totalQuantity": 1, "orderType": "LMT", "lmtPrice": 170.0},
+        default_transmit=False,
+    )
+    assert order.transmit is False
+
+    client.preview_order(contract, order)
+
+    assert stub_ib.seen_order is not None
+    assert stub_ib.seen_order.transmit is True
+    assert order.transmit is False
