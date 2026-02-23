@@ -30,6 +30,7 @@ IBKR_PORT=7496 # live trading port (paper is 7497)
 IBKR_CLIENT_ID=123
 IBKR_ACCOUNT=
 IBKR_TIMEOUT_SECONDS=10
+IBKR_ENABLE_TRADING=false # keep false by default; set true only for explicit trading actions
 MCP_BIND_HOST=0.0.0.0 # bind all interfaces so Docker port mapping is reachable; 127.0.0.1 would be container-only
 MCP_PORT=8000
 MCP_JSON_RESPONSE=true
@@ -84,7 +85,20 @@ curl -s -X POST http://localhost:${MCP_PORT:-8000}/mcp \
 - `ibkr_get_fundamental_data`: Fundamental data report (JSON by default, XML optional).
 - `ibkr_get_scanner_params`: Scanner parameters (JSON by default, XML optional).
 - `ibkr_run_scanner`: Run a market scanner subscription and return ranked results.
+- `ibkr_preview_order`: What-if margin/commission preview for an order.
+- `ibkr_place_order`: Place one order (defaults: `dry_run=true`, `transmit=false`).
+- `ibkr_cancel_order`: Cancel one order by `orderId` (requires `confirm=true`).
+- `ibkr_global_cancel`: Cancel all active orders (requires `confirm=true`).
+- `ibkr_bracket_order`: Place bracket entry/take-profit/stop-loss orders (defaults: `dry_run=true`, `transmit=false`).
+- `ibkr_oca_group`: Place OCA grouped orders (defaults: `dry_run=true`, `transmit=false`).
+- `ibkr_exercise_options`: Exercise/lapse options contract (requires `confirm=true`).
 
+Batch 2 tool examples: `docs/batch2_examples.md`.
+
+Batch 3 safety rules:
+- Live mutating tools are disabled unless `IBKR_ENABLE_TRADING=true`.
+- Mutating tools require `confirm=true`.
+- Order placement flows default to `dry_run=true` and `transmit=false`.
 ## Schemas and Errors
 `tools/list` includes `title`, `description`, `inputSchema`, and `outputSchema` for every tool. Input schemas include per-parameter descriptions, and output schemas describe the structured response payloads.
 
