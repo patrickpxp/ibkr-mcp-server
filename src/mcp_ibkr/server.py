@@ -1,6 +1,8 @@
 import logging
 import os
+from dataclasses import fields as dataclass_fields, is_dataclass
 from datetime import datetime
+from decimal import Decimal
 from typing import Annotated, Any, Iterable
 from zoneinfo import ZoneInfo
 
@@ -9,6 +11,7 @@ import fastmcp
 from fastapi import FastAPI
 from fastmcp import FastMCP
 from ib_async.objects import ExecutionFilter
+from ib_async.order import Order
 from ib_async import util
 import mcp.types as mcp_types
 from pydantic import BaseModel, Field
@@ -28,8 +31,10 @@ from .models import (
     ContractModel,
     ErrorDetails,
     ErrorResponse,
+    ExerciseOptionsResponse,
     ExecutionModel,
     ExecutionsResponse,
+    GlobalCancelResponse,
     FundamentalDataResponse,
     HeadTimestampResponse,
     HistoricalBarModel,
@@ -49,15 +54,22 @@ from .models import (
     NewsProvidersResponse,
     OpenOrderModel,
     OpenOrdersResponse,
+    OrderStateModel,
     OptionChainModel,
     OptionChainResponse,
+    OcaGroupResponse,
+    PlaceOrderResponse,
     PortfolioResponse,
     PositionModel,
+    PreviewOrderResponse,
+    BracketOrderResponse,
+    CancelOrderResponse,
     ScannerDataResponse,
     ScannerParamsResponse,
     ScannerResultModel,
     SymbolMatchModel,
     SymbolMatchesResponse,
+    TradeSnapshotModel,
     TotalsModel,
 )
 
@@ -380,6 +392,80 @@ ExecutionSide = Annotated[
 ExecutionTime = Annotated[
     str | None, Field(description="Execution time filter string.")
 ]
+OrderInput = Annotated[
+    dict,
+    Field(
+        description=(
+            "Order fields (action, totalQuantity, orderType, lmtPrice, auxPrice, tif, account, etc.)."
+        )
+    ),
+]
+Confirm = Annotated[
+    bool,
+    Field(description="Must be true to execute a live trading action."),
+]
+DryRun = Annotated[
+    bool,
+    Field(description="When true, return notes only and do not place orders."),
+]
+Transmit = Annotated[
+    bool,
+    Field(description="Whether to transmit placed orders to IBKR (default false)."),
+]
+OrderId = Annotated[
+    int,
+    Field(description="IBKR orderId to cancel."),
+]
+OrderAction = Annotated[
+    str,
+    Field(description="Order action: BUY or SELL."),
+]
+OrderQuantity = Annotated[
+    float,
+    Field(description="Order quantity."),
+]
+LimitPrice = Annotated[
+    float,
+    Field(description="Limit price."),
+]
+TakeProfitPrice = Annotated[
+    float,
+    Field(description="Take-profit limit price."),
+]
+StopLossPrice = Annotated[
+    float,
+    Field(description="Stop-loss trigger price."),
+]
+OrderOptionsInput = Annotated[
+    dict,
+    Field(description="Optional order fields applied to bracket legs."),
+]
+OcaOrdersInput = Annotated[
+    list[dict],
+    Field(description="List of objects with `contract` and `order` for OCA placement."),
+]
+OcaGroup = Annotated[
+    str,
+    Field(description="OCA group identifier."),
+]
+OcaType = Annotated[
+    int,
+    Field(description="OCA type value."),
+]
+ExerciseAction = Annotated[
+    int,
+    Field(description="1 to exercise, 2 to lapse."),
+]
+ExerciseQuantity = Annotated[
+    int,
+    Field(description="Number of option contracts."),
+]
+Override = Annotated[
+    int,
+    Field(description="0 no override, 1 override natural action."),
+]
+
+_ORDER_FIELD_NAMES = {field.name for field in dataclass_fields(Order)}
 
 def _error_response(
     error_type: str,
@@ -441,6 +527,91 @@ def _contract_model(contract: object | None) -> ContractModel:
         exchange=getattr(contract, "exchange", None),
         currency=getattr(contract, "currency", None),
         primaryExchange=getattr(contract, "primaryExchange", None),
+    )
+
+
+def _trading_enabled() -> bool:
+    return _env_bool("IBKR_ENABLE_TRADING", False)
+
+
+def _ensure_trading_allowed(confirm: bool) -> dict | None:
+    if not _trading_enabled():
+        return _error_response(
+            "TRADING_DISABLED",
+            "live trading is disabled; set IBKR_ENABLE_TRADING=true to enable mutating tools",
+            False,
+        )
+    if not confirm:
+        return _error_response(
+            "CONFIRM_REQUIRED",
+            "confirm must be true for this trading action",
+            False,
+        )
+    return None
+
+
+def _jsonify(value: object) -> object:
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if is_dataclass(value):
+        return {
+            field.name: _jsonify(getattr(value, field.name))
+            for field in dataclass_fields(value)
+        }
+    if isinstance(value, dict):
+        return {str(key): _jsonify(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_jsonify(item) for item in value]
+    if hasattr(value, "__dict__"):
+        return {
+            str(key): _jsonify(item)
+            for key, item in vars(value).items()
+            if not str(key).startswith("_")
+        }
+    return str(value)
+
+
+def _trade_snapshot_model(trade: object | None) -> TradeSnapshotModel | None:
+    if trade is None:
+        return None
+    is_done_value = getattr(trade, "isDone", None)
+    is_done = is_done_value() if callable(is_done_value) else None
+    return TradeSnapshotModel(
+        contract=_jsonify(getattr(trade, "contract", None)) or {},
+        order=_jsonify(getattr(trade, "order", None)) or {},
+        orderStatus=_jsonify(getattr(trade, "orderStatus", None)) or {},
+        fills=_jsonify(list(getattr(trade, "fills", []) or [])) or [],
+        log=_jsonify(list(getattr(trade, "log", []) or [])) or [],
+        advancedError=getattr(trade, "advancedError", None),
+        isDone=is_done if isinstance(is_done, bool) else None,
+    )
+
+
+def _order_state_model(order_state: object | None) -> OrderStateModel | None:
+    if order_state is None:
+        return None
+    return OrderStateModel(
+        status=getattr(order_state, "status", None),
+        initMarginBefore=getattr(order_state, "initMarginBefore", None),
+        maintMarginBefore=getattr(order_state, "maintMarginBefore", None),
+        equityWithLoanBefore=getattr(order_state, "equityWithLoanBefore", None),
+        initMarginChange=getattr(order_state, "initMarginChange", None),
+        maintMarginChange=getattr(order_state, "maintMarginChange", None),
+        equityWithLoanChange=getattr(order_state, "equityWithLoanChange", None),
+        initMarginAfter=getattr(order_state, "initMarginAfter", None),
+        maintMarginAfter=getattr(order_state, "maintMarginAfter", None),
+        equityWithLoanAfter=getattr(order_state, "equityWithLoanAfter", None),
+        commission=_optional_float(getattr(order_state, "commission", None)),
+        minCommission=_optional_float(getattr(order_state, "minCommission", None)),
+        maxCommission=_optional_float(getattr(order_state, "maxCommission", None)),
+        commissionCurrency=getattr(order_state, "commissionCurrency", None),
+        warningText=getattr(order_state, "warningText", None),
+        completedTime=getattr(order_state, "completedTime", None),
+        completedStatus=getattr(order_state, "completedStatus", None),
     )
 
 
@@ -1437,6 +1608,464 @@ async def ibkr_run_scanner(subscription: ScannerSubscription) -> dict:
     return await anyio.to_thread.run_sync(
         _ibkr_run_scanner_sync,
         subscription,
+    )
+
+
+def _normalize_bracket_order_options(
+    options: dict | None,
+) -> tuple[dict[str, object], list[str]] | tuple[None, None]:
+    if options is None:
+        return {}, []
+    if not isinstance(options, dict):
+        return None, None
+    notes: list[str] = []
+    forbidden = {
+        "action",
+        "totalQuantity",
+        "orderType",
+        "lmtPrice",
+        "auxPrice",
+        "orderId",
+        "parentId",
+        "transmit",
+    }
+    normalized: dict[str, object] = {}
+    for key, value in options.items():
+        if key not in _ORDER_FIELD_NAMES:
+            notes.append(f"ignored unknown bracket order option '{key}'")
+            continue
+        if key in forbidden:
+            notes.append(f"ignored bracket order option '{key}'")
+            continue
+        normalized[str(key)] = value
+    return normalized, notes
+
+
+def _ibkr_preview_order_sync(
+    contract: dict,
+    order: dict,
+) -> dict:
+    def action(client: IBKRClient) -> dict:
+        notes: list[str] = []
+        if not isinstance(contract, dict):
+            return _error_response("INVALID_ARGUMENT", "contract must be an object", False)
+        if not isinstance(order, dict):
+            return _error_response("INVALID_ARGUMENT", "order must be an object", False)
+        try:
+            contract_obj = IBKRClient.contract_from_input(contract)
+            order_obj = IBKRClient.order_from_input(order, default_transmit=False)
+        except ValueError as exc:
+            return _error_response("INVALID_ARGUMENT", str(exc), False)
+        order_state, qualification_notes = client.preview_order(contract_obj, order_obj)
+        notes.extend(qualification_notes)
+        response = PreviewOrderResponse(
+            orderState=_order_state_model(order_state),
+            notes=notes,
+        )
+        return response.model_dump()
+
+    return _run_with_client(action)
+
+
+@mcp.tool(
+    title="Preview Order",
+    description="Run IBKR what-if analysis for an order and return margin/commission impact.",
+    output_schema=_combined_output_schema(PreviewOrderResponse),
+)
+async def ibkr_preview_order(
+    contract: ContractInput,
+    order: OrderInput,
+) -> dict:
+    return await anyio.to_thread.run_sync(
+        _ibkr_preview_order_sync,
+        contract,
+        order,
+    )
+
+
+def _ibkr_place_order_sync(
+    contract: dict,
+    order: dict,
+    confirm: bool = False,
+    dry_run: bool = True,
+    transmit: bool = False,
+) -> dict:
+    def action(client: IBKRClient) -> dict:
+        notes: list[str] = []
+        if not isinstance(contract, dict):
+            return _error_response("INVALID_ARGUMENT", "contract must be an object", False)
+        if not isinstance(order, dict):
+            return _error_response("INVALID_ARGUMENT", "order must be an object", False)
+        try:
+            contract_obj = IBKRClient.contract_from_input(contract)
+            order_obj = IBKRClient.order_from_input(order, default_transmit=transmit)
+        except ValueError as exc:
+            return _error_response("INVALID_ARGUMENT", str(exc), False)
+        order_obj.transmit = transmit
+        if dry_run:
+            notes.append("dry_run=true; order not sent")
+            notes.append(f"order transmit={bool(order_obj.transmit)}")
+            response = PlaceOrderResponse(trade=None, notes=notes)
+            return response.model_dump()
+        trading_error = _ensure_trading_allowed(confirm)
+        if trading_error:
+            return trading_error
+
+        trade, qualification_notes = client.place_order(contract_obj, order_obj)
+        notes.extend(qualification_notes)
+        if trade is None:
+            notes.append("order not placed")
+        response = PlaceOrderResponse(
+            trade=_trade_snapshot_model(trade),
+            notes=notes,
+        )
+        return response.model_dump()
+
+    return _run_with_client(action)
+
+
+@mcp.tool(
+    title="Place Order",
+    description="Place an IBKR order. Defaults to dry_run=true and transmit=false for safety.",
+    output_schema=_combined_output_schema(PlaceOrderResponse),
+)
+async def ibkr_place_order(
+    contract: ContractInput,
+    order: OrderInput,
+    confirm: Confirm = False,
+    dry_run: DryRun = True,
+    transmit: Transmit = False,
+) -> dict:
+    return await anyio.to_thread.run_sync(
+        _ibkr_place_order_sync,
+        contract,
+        order,
+        confirm,
+        dry_run,
+        transmit,
+    )
+
+
+def _ibkr_cancel_order_sync(
+    orderId: int,
+    confirm: bool = False,
+) -> dict:
+    def action(client: IBKRClient) -> dict:
+        trading_error = _ensure_trading_allowed(confirm)
+        if trading_error:
+            return trading_error
+        order_id = _optional_int(orderId)
+        if order_id is None:
+            return _error_response("INVALID_ARGUMENT", "orderId must be an integer", False)
+        trade, notes = client.cancel_order_by_id(order_id)
+        response = CancelOrderResponse(
+            orderId=order_id,
+            trade=_trade_snapshot_model(trade),
+            notes=notes,
+        )
+        return response.model_dump()
+
+    return _run_with_client(action)
+
+
+@mcp.tool(
+    title="Cancel Order",
+    description="Cancel a single IBKR order by orderId. Requires confirm=true.",
+    output_schema=_combined_output_schema(CancelOrderResponse),
+)
+async def ibkr_cancel_order(
+    orderId: OrderId,
+    confirm: Confirm = False,
+) -> dict:
+    return await anyio.to_thread.run_sync(
+        _ibkr_cancel_order_sync,
+        orderId,
+        confirm,
+    )
+
+
+def _ibkr_global_cancel_sync(confirm: bool = False) -> dict:
+    def action(client: IBKRClient) -> dict:
+        trading_error = _ensure_trading_allowed(confirm)
+        if trading_error:
+            return trading_error
+        client.global_cancel()
+        response = GlobalCancelResponse(status="submitted", notes=[])
+        return response.model_dump()
+
+    return _run_with_client(action)
+
+
+@mcp.tool(
+    title="Global Cancel",
+    description="Cancel all active IBKR orders. Requires confirm=true.",
+    output_schema=_combined_output_schema(GlobalCancelResponse),
+)
+async def ibkr_global_cancel(confirm: Confirm = False) -> dict:
+    return await anyio.to_thread.run_sync(
+        _ibkr_global_cancel_sync,
+        confirm,
+    )
+
+
+def _ibkr_bracket_order_sync(
+    contract: dict,
+    action: str,
+    quantity: float,
+    limitPrice: float,
+    takeProfitPrice: float,
+    stopLossPrice: float,
+    confirm: bool = False,
+    dry_run: bool = True,
+    transmit: bool = False,
+    orderOptions: dict | None = None,
+) -> dict:
+    def action_fn(client: IBKRClient) -> dict:
+        notes: list[str] = []
+        if not isinstance(contract, dict):
+            return _error_response("INVALID_ARGUMENT", "contract must be an object", False)
+        try:
+            contract_obj = IBKRClient.contract_from_input(contract)
+        except ValueError as exc:
+            return _error_response("INVALID_ARGUMENT", str(exc), False)
+
+        normalized_options, option_notes = _normalize_bracket_order_options(orderOptions)
+        if normalized_options is None:
+            return _error_response("INVALID_ARGUMENT", "orderOptions must be an object", False)
+        notes.extend(option_notes or [])
+        normalized_action = str(action or "").strip().upper()
+        if normalized_action not in {"BUY", "SELL"}:
+            return _error_response("INVALID_ARGUMENT", "action must be BUY or SELL", False)
+
+        if dry_run:
+            notes.append("dry_run=true; bracket order not sent")
+            notes.append(f"order transmit={bool(transmit)}")
+            response = BracketOrderResponse(orderIds=[], trades=[], notes=notes)
+            return response.model_dump()
+
+        trading_error = _ensure_trading_allowed(confirm)
+        if trading_error:
+            return trading_error
+
+        trades, qualification_notes = client.place_bracket_order(
+            contract=contract_obj,
+            action=normalized_action,
+            quantity=float(quantity),
+            limit_price=float(limitPrice),
+            take_profit_price=float(takeProfitPrice),
+            stop_loss_price=float(stopLossPrice),
+            transmit=transmit,
+            order_kwargs=normalized_options,
+        )
+        notes.extend(qualification_notes)
+        snapshots = [snapshot for trade in trades if (snapshot := _trade_snapshot_model(trade))]
+        order_ids = [
+            _optional_int(getattr(getattr(trade, "order", None), "orderId", None))
+            for trade in trades
+        ]
+        response = BracketOrderResponse(
+            orderIds=[order_id for order_id in order_ids if order_id is not None],
+            trades=snapshots,
+            notes=notes,
+        )
+        return response.model_dump()
+
+    return _run_with_client(action_fn)
+
+
+@mcp.tool(
+    title="Bracket Order",
+    description=(
+        "Create and place a bracket order (entry, take-profit, stop-loss). "
+        "Defaults to dry_run=true and transmit=false."
+    ),
+    output_schema=_combined_output_schema(BracketOrderResponse),
+)
+async def ibkr_bracket_order(
+    contract: ContractInput,
+    action: OrderAction,
+    quantity: OrderQuantity,
+    limitPrice: LimitPrice,
+    takeProfitPrice: TakeProfitPrice,
+    stopLossPrice: StopLossPrice,
+    confirm: Confirm = False,
+    dry_run: DryRun = True,
+    transmit: Transmit = False,
+    orderOptions: OrderOptionsInput | None = None,
+) -> dict:
+    return await anyio.to_thread.run_sync(
+        _ibkr_bracket_order_sync,
+        contract,
+        action,
+        quantity,
+        limitPrice,
+        takeProfitPrice,
+        stopLossPrice,
+        confirm,
+        dry_run,
+        transmit,
+        orderOptions,
+    )
+
+
+def _ibkr_oca_group_sync(
+    orders: list[dict],
+    ocaGroup: str,
+    ocaType: int,
+    confirm: bool = False,
+    dry_run: bool = True,
+    transmit: bool = False,
+) -> dict:
+    def action_fn(client: IBKRClient) -> dict:
+        notes: list[str] = []
+        if not isinstance(orders, list):
+            return _error_response("INVALID_ARGUMENT", "orders must be a list", False)
+        parsed_entries: list[tuple[object, object]] = []
+        for index, item in enumerate(orders):
+            if not isinstance(item, dict):
+                return _error_response("INVALID_ARGUMENT", f"orders[{index}] must be an object", False)
+            contract_input = item.get("contract")
+            order_input = item.get("order")
+            if not isinstance(contract_input, dict) or not isinstance(order_input, dict):
+                return _error_response(
+                    "INVALID_ARGUMENT",
+                    f"orders[{index}] requires object fields: contract and order",
+                    False,
+                )
+            try:
+                contract_obj = IBKRClient.contract_from_input(contract_input)
+                order_obj = IBKRClient.order_from_input(order_input, default_transmit=transmit)
+            except ValueError as exc:
+                return _error_response("INVALID_ARGUMENT", f"orders[{index}] {exc}", False)
+            order_obj.transmit = transmit
+            parsed_entries.append((contract_obj, order_obj))
+        if not parsed_entries:
+            return _error_response("INVALID_ARGUMENT", "orders must not be empty", False)
+
+        normalized_oca_type = _optional_int(ocaType)
+        if normalized_oca_type is None:
+            return _error_response("INVALID_ARGUMENT", "ocaType must be an integer", False)
+
+        if dry_run:
+            notes.append("dry_run=true; OCA orders not sent")
+            notes.append(f"order transmit={bool(transmit)}")
+            response = OcaGroupResponse(
+                ocaGroup=ocaGroup,
+                ocaType=normalized_oca_type,
+                orderIds=[],
+                trades=[],
+                notes=notes,
+            )
+            return response.model_dump()
+
+        trading_error = _ensure_trading_allowed(confirm)
+        if trading_error:
+            return trading_error
+
+        trades, qualification_notes = client.apply_oca_group_and_place(
+            entries=parsed_entries,
+            oca_group=ocaGroup,
+            oca_type=normalized_oca_type,
+            transmit=transmit,
+        )
+        notes.extend(qualification_notes)
+        snapshots = [snapshot for trade in trades if (snapshot := _trade_snapshot_model(trade))]
+        order_ids = [
+            _optional_int(getattr(getattr(trade, "order", None), "orderId", None))
+            for trade in trades
+        ]
+        response = OcaGroupResponse(
+            ocaGroup=ocaGroup,
+            ocaType=normalized_oca_type,
+            orderIds=[order_id for order_id in order_ids if order_id is not None],
+            trades=snapshots,
+            notes=notes,
+        )
+        return response.model_dump()
+
+    return _run_with_client(action_fn)
+
+
+@mcp.tool(
+    title="Place OCA Group",
+    description=(
+        "Apply an OCA group to multiple orders and place them. "
+        "Defaults to dry_run=true and transmit=false."
+    ),
+    output_schema=_combined_output_schema(OcaGroupResponse),
+)
+async def ibkr_oca_group(
+    orders: OcaOrdersInput,
+    ocaGroup: OcaGroup,
+    ocaType: OcaType,
+    confirm: Confirm = False,
+    dry_run: DryRun = True,
+    transmit: Transmit = False,
+) -> dict:
+    return await anyio.to_thread.run_sync(
+        _ibkr_oca_group_sync,
+        orders,
+        ocaGroup,
+        ocaType,
+        confirm,
+        dry_run,
+        transmit,
+    )
+
+
+def _ibkr_exercise_options_sync(
+    contract: dict,
+    exerciseAction: int,
+    exerciseQuantity: int,
+    account: str | None,
+    override: int,
+    confirm: bool = False,
+) -> dict:
+    def action_fn(client: IBKRClient) -> dict:
+        trading_error = _ensure_trading_allowed(confirm)
+        if trading_error:
+            return trading_error
+        if not isinstance(contract, dict):
+            return _error_response("INVALID_ARGUMENT", "contract must be an object", False)
+        try:
+            contract_obj = IBKRClient.contract_from_input(contract)
+        except ValueError as exc:
+            return _error_response("INVALID_ARGUMENT", str(exc), False)
+        resolved_account, account_notes = _resolve_account(account, client)
+        status, notes = client.exercise_options(
+            contract_obj,
+            int(exerciseAction),
+            int(exerciseQuantity),
+            resolved_account,
+            int(override),
+        )
+        response = ExerciseOptionsResponse(status=status, notes=[*account_notes, *notes])
+        return response.model_dump()
+
+    return _run_with_client(action_fn)
+
+
+@mcp.tool(
+    title="Exercise Options",
+    description="Exercise or lapse an options contract. Requires confirm=true.",
+    output_schema=_combined_output_schema(ExerciseOptionsResponse),
+)
+async def ibkr_exercise_options(
+    contract: ContractInput,
+    exerciseAction: ExerciseAction,
+    exerciseQuantity: ExerciseQuantity,
+    account: AccountId = None,
+    override: Override = 0,
+    confirm: Confirm = False,
+) -> dict:
+    return await anyio.to_thread.run_sync(
+        _ibkr_exercise_options_sync,
+        contract,
+        exerciseAction,
+        exerciseQuantity,
+        account,
+        override,
+        confirm,
     )
 
 

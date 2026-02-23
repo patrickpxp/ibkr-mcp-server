@@ -3,12 +3,13 @@ import logging
 import math
 import os
 import threading
+from dataclasses import fields as dataclass_fields
 from typing import Iterable, Optional
 
 from ib_async import IB, util
 from ib_async.contract import Contract, ContractDescription, ContractDetails
 from ib_async.objects import AccountValue, ExecutionFilter, Fill, ScannerSubscription
-from ib_async.order import Trade
+from ib_async.order import LimitOrder, Order, OrderState, StopOrder, Trade
 
 from .models import PnlResult, PositionModel, PositionSnapshot, TotalsModel
 
@@ -90,6 +91,40 @@ def _position_model(snapshot: PositionSnapshot) -> PositionModel:
         position=snapshot.position,
         avgCost=snapshot.avg_cost,
     )
+
+
+_ORDER_INT_FIELDS = {
+    "orderId",
+    "clientId",
+    "permId",
+    "parentId",
+    "ocaType",
+    "displaySize",
+    "triggerMethod",
+    "minQty",
+    "origin",
+    "shortSaleSlot",
+    "exemptCode",
+    "referenceContractId",
+}
+_ORDER_FLOAT_FIELDS = {
+    "totalQuantity",
+    "lmtPrice",
+    "auxPrice",
+    "trailStopPrice",
+    "trailingPercent",
+    "cashQty",
+    "discretionaryAmt",
+}
+_ORDER_BOOL_FIELDS = {
+    "transmit",
+    "outsideRth",
+    "hidden",
+    "allOrNone",
+    "whatIf",
+    "sweepToFill",
+    "blockOrder",
+}
 
 
 class IBKRClient:
@@ -209,6 +244,50 @@ class IBKRClient:
         if not kwargs:
             raise ValueError("contract requires at least one field")
         return Contract(**kwargs)
+
+    @staticmethod
+    def order_from_input(
+        data: dict[str, object],
+        default_transmit: bool = False,
+    ) -> Order:
+        if not isinstance(data, dict):
+            raise ValueError("order must be an object")
+        allowed_fields = {field.name for field in dataclass_fields(Order)}
+        kwargs: dict[str, object] = {}
+        for key in allowed_fields:
+            if key not in data:
+                continue
+            value = data.get(key)
+            if value is None:
+                continue
+            if key in _ORDER_INT_FIELDS:
+                coerced = _to_int(value)
+                if coerced is not None:
+                    kwargs[key] = coerced
+            elif key in _ORDER_FLOAT_FIELDS:
+                coerced = _to_float(value)
+                if coerced is not None:
+                    kwargs[key] = coerced
+            elif key in _ORDER_BOOL_FIELDS:
+                coerced = _coerce_bool(value)
+                if coerced is not None:
+                    kwargs[key] = coerced
+            else:
+                kwargs[key] = value
+
+        if "transmit" not in kwargs:
+            kwargs["transmit"] = default_transmit
+
+        required_fields = {"action", "totalQuantity", "orderType"}
+        missing = [
+            name
+            for name in required_fields
+            if kwargs.get(name) in (None, "", 0, 0.0)
+        ]
+        if missing:
+            raise ValueError(f"order missing required field(s): {', '.join(sorted(missing))}")
+
+        return Order(**kwargs)
 
     def get_managed_accounts(self) -> list[str]:
         return list(self.ib.managedAccounts())
@@ -497,6 +576,186 @@ class IBKRClient:
             self.ib.reqNewsArticleAsync(provider_code, article_id),
             timeout=self.timeout_seconds,
         )
+
+    def preview_order(
+        self,
+        contract: Contract,
+        order: Order,
+    ) -> tuple[OrderState | None, list[str]]:
+        qualified_contract, notes = self.qualify_contract(contract)
+        if not qualified_contract:
+            return None, notes
+        # IBKR requires transmit=true for what-if requests.
+        what_if_order = copy.copy(order)
+        what_if_order.transmit = True
+        state = util.run(
+            self.ib.whatIfOrderAsync(qualified_contract, what_if_order),
+            timeout=self.timeout_seconds,
+        )
+        return state, notes
+
+    def place_order(
+        self,
+        contract: Contract,
+        order: Order,
+    ) -> tuple[Trade | None, list[str]]:
+        qualified_contract, notes = self.qualify_contract(contract)
+        if not qualified_contract:
+            return None, notes
+        trade = self.ib.placeOrder(qualified_contract, order)
+        util.sleep(min(self.timeout_seconds, 1))
+        return trade, notes
+
+    def create_bracket_orders(
+        self,
+        action: str,
+        quantity: float,
+        limit_price: float,
+        take_profit_price: float,
+        stop_loss_price: float,
+        transmit: bool = False,
+        order_kwargs: Optional[dict[str, object]] = None,
+    ) -> list[Order]:
+        if action not in {"BUY", "SELL"}:
+            raise ValueError("action must be BUY or SELL")
+        reverse_action = "BUY" if action == "SELL" else "SELL"
+        common_kwargs = dict(order_kwargs or {})
+        parent = LimitOrder(
+            action,
+            quantity,
+            limit_price,
+            orderId=self.ib.client.getReqId(),
+            transmit=False,
+            **common_kwargs,
+        )
+        take_profit = LimitOrder(
+            reverse_action,
+            quantity,
+            take_profit_price,
+            orderId=self.ib.client.getReqId(),
+            parentId=parent.orderId,
+            transmit=False,
+            **common_kwargs,
+        )
+        stop_loss = StopOrder(
+            reverse_action,
+            quantity,
+            stop_loss_price,
+            orderId=self.ib.client.getReqId(),
+            parentId=parent.orderId,
+            transmit=transmit,
+            **common_kwargs,
+        )
+        if not transmit:
+            parent.transmit = False
+            take_profit.transmit = False
+            stop_loss.transmit = False
+        return [parent, take_profit, stop_loss]
+
+    def place_bracket_order(
+        self,
+        contract: Contract,
+        action: str,
+        quantity: float,
+        limit_price: float,
+        take_profit_price: float,
+        stop_loss_price: float,
+        transmit: bool = False,
+        order_kwargs: Optional[dict[str, object]] = None,
+    ) -> tuple[list[Trade], list[str]]:
+        qualified_contract, notes = self.qualify_contract(contract)
+        if not qualified_contract:
+            return [], notes
+        orders = self.create_bracket_orders(
+            action=action,
+            quantity=quantity,
+            limit_price=limit_price,
+            take_profit_price=take_profit_price,
+            stop_loss_price=stop_loss_price,
+            transmit=transmit,
+            order_kwargs=order_kwargs,
+        )
+        trades = [self.ib.placeOrder(qualified_contract, order) for order in orders]
+        util.sleep(min(self.timeout_seconds, 1))
+        return trades, notes
+
+    def apply_oca_group_and_place(
+        self,
+        entries: Iterable[tuple[Contract, Order]],
+        oca_group: str,
+        oca_type: int,
+        transmit: bool = False,
+    ) -> tuple[list[Trade], list[str]]:
+        notes: list[str] = []
+        normalized_entries: list[tuple[Contract, Order]] = []
+        for contract, order in entries:
+            qualified_contract, qualification_notes = self.qualify_contract(contract)
+            notes.extend(qualification_notes)
+            if not qualified_contract:
+                continue
+            normalized_entries.append((qualified_contract, order))
+
+        if not normalized_entries:
+            return [], notes
+
+        orders = [order for _, order in normalized_entries]
+        grouped_orders = self.ib.oneCancelsAll(orders, oca_group, oca_type)
+        for order in grouped_orders:
+            order.transmit = transmit
+        trades = [
+            self.ib.placeOrder(contract, order)
+            for (contract, _), order in zip(normalized_entries, grouped_orders)
+        ]
+        util.sleep(min(self.timeout_seconds, 1))
+        return trades, notes
+
+    def _find_trade_by_order_id(self, order_id: int) -> Trade | None:
+        for trade in self.get_open_orders(include_all=True):
+            if _to_int(getattr(getattr(trade, "order", None), "orderId", None)) == order_id:
+                return trade
+        for trade in self.ib.trades():
+            if _to_int(getattr(getattr(trade, "order", None), "orderId", None)) == order_id:
+                return trade
+        return None
+
+    def cancel_order_by_id(self, order_id: int) -> tuple[Trade | None, list[str]]:
+        notes: list[str] = []
+        trade = self._find_trade_by_order_id(order_id)
+        if trade is None:
+            notes.append("order not found in local trade cache; sending cancel by orderId only")
+            synthetic_order = Order(orderId=order_id, clientId=self.client_id)
+            self.ib.cancelOrder(synthetic_order)
+            util.sleep(min(self.timeout_seconds, 1))
+            return None, notes
+
+        cancelled_trade = self.ib.cancelOrder(getattr(trade, "order"))
+        util.sleep(min(self.timeout_seconds, 1))
+        return cancelled_trade or trade, notes
+
+    def global_cancel(self) -> None:
+        self.ib.reqGlobalCancel()
+        util.sleep(min(self.timeout_seconds, 1))
+
+    def exercise_options(
+        self,
+        contract: Contract,
+        exercise_action: int,
+        exercise_quantity: int,
+        account: str,
+        override: int,
+    ) -> tuple[str, list[str]]:
+        qualified_contract, notes = self.qualify_contract(contract)
+        if not qualified_contract:
+            return "not_sent", notes
+        self.ib.exerciseOptions(
+            qualified_contract,
+            exercise_action,
+            exercise_quantity,
+            account,
+            override,
+        )
+        util.sleep(min(self.timeout_seconds, 1))
+        return "submitted", notes
 
     @staticmethod
     def scanner_subscription_from_input(data: dict[str, object]) -> ScannerSubscription:
