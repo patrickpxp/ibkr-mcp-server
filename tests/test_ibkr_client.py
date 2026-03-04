@@ -10,6 +10,12 @@ class _StubIB:
     def __init__(self) -> None:
         self._positions = []
         self._connected = False
+        self.client = self._Client()
+
+    class _Client:
+        @staticmethod
+        def reqAccountUpdates(subscribe, account):
+            return None
 
     def connect(self, *args, **kwargs):
         return True
@@ -25,6 +31,12 @@ class _StubIB:
 
     def reqTickersAsync(self, *contracts):
         return ("tickers", contracts)
+
+    def reqAccountUpdatesAsync(self, account):
+        return ("account_updates", account)
+
+    def portfolio(self, account=""):
+        return []
 
     def accountSummaryAsync(self, *args, **kwargs):
         return ("summary", args, kwargs)
@@ -127,12 +139,12 @@ def test_get_pnl_best_effort_notes_missing_market_data(monkeypatch):
         def marketPrice(self):
             return None
 
-    calls = {"count": 0}
-
     def fake_run(*args, **kwargs):
-        calls["count"] += 1
-        if calls["count"] == 1:
+        token = args[0]
+        if isinstance(token, tuple) and token and token[0] == "tickers":
             return [Ticker()]
+        if isinstance(token, tuple) and token and token[0] == "account_updates":
+            return None
         return []
 
     monkeypatch.setattr("mcp_ibkr.ibkr_client.util.run", fake_run)
@@ -171,12 +183,12 @@ def test_get_pnl_best_effort_notes_account_summary_failure(monkeypatch):
         last = 170.0
         close = 169.0
 
-    calls = {"count": 0}
-
     def fake_run(*args, **kwargs):
-        calls["count"] += 1
-        if calls["count"] == 1:
+        token = args[0]
+        if isinstance(token, tuple) and token and token[0] == "tickers":
             return [Ticker()]
+        if isinstance(token, tuple) and token and token[0] == "account_updates":
+            return None
         raise RuntimeError("summary down")
 
     monkeypatch.setattr("mcp_ibkr.ibkr_client.util.run", fake_run)
@@ -185,6 +197,120 @@ def test_get_pnl_best_effort_notes_account_summary_failure(monkeypatch):
 
     assert any("account summary unavailable" in note for note in result.notes)
     assert result.totals.netLiquidation is None
+
+
+def test_get_pnl_best_effort_uses_portfolio_fallback(monkeypatch):
+    client = IBKRClient(host="127.0.0.1", port=7497, client_id=1, timeout_seconds=1)
+    client.ib = _StubIB()
+
+    class Contract:
+        conId = 123
+        symbol = "AAPL"
+        secType = "STK"
+        exchange = "SMART"
+        currency = "USD"
+
+    class PortfolioItem:
+        contract = Contract()
+        marketPrice = 171.5
+        marketValue = 1715.0
+        unrealizedPNL = 215.0
+        realizedPNL = 12.0
+
+    snapshot = PositionSnapshot(
+        symbol="AAPL",
+        sec_type="STK",
+        exchange="SMART",
+        currency="USD",
+        con_id=123,
+        position=10.0,
+        avg_cost=150.0,
+        contract=Contract(),
+    )
+
+    monkeypatch.setattr(client.ib, "portfolio", lambda account="": [PortfolioItem()])
+
+    class Ticker:
+        contract = Contract()
+        last = None
+        close = None
+
+        def marketPrice(self):
+            return None
+
+    def fake_run(*args, **kwargs):
+        token = args[0]
+        if isinstance(token, tuple) and token and token[0] == "tickers":
+            return [Ticker()]
+        if isinstance(token, tuple) and token and token[0] == "account_updates":
+            return None
+        return []
+
+    monkeypatch.setattr("mcp_ibkr.ibkr_client.util.run", fake_run)
+
+    result = client.get_pnl_best_effort("U123", [snapshot])
+
+    assert result.positions[0].marketPrice == 171.5
+    assert result.positions[0].unrealizedPnl == 215.0
+    assert result.positions[0].realizedPnl == 12.0
+    assert result.totals.unrealizedPnl == 215.0
+    assert result.totals.realizedPnl == 12.0
+
+
+def test_get_pnl_best_effort_uses_cached_portfolio_on_refresh_timeout(monkeypatch):
+    client = IBKRClient(host="127.0.0.1", port=7497, client_id=1, timeout_seconds=1)
+    client.ib = _StubIB()
+
+    class Contract:
+        conId = 123
+        symbol = "AAPL"
+        secType = "STK"
+        exchange = "SMART"
+        currency = "USD"
+
+    class PortfolioItem:
+        contract = Contract()
+        marketPrice = 171.5
+        marketValue = 1715.0
+        unrealizedPNL = 215.0
+        realizedPNL = 12.0
+        account = "U123"
+
+    snapshot = PositionSnapshot(
+        symbol="AAPL",
+        sec_type="STK",
+        exchange="SMART",
+        currency="USD",
+        con_id=123,
+        position=10.0,
+        avg_cost=150.0,
+        contract=Contract(),
+    )
+
+    monkeypatch.setattr(client.ib, "portfolio", lambda account="": [PortfolioItem()])
+
+    class Ticker:
+        contract = Contract()
+        last = None
+        close = None
+
+        def marketPrice(self):
+            return None
+
+    def fake_run(*args, **kwargs):
+        token = args[0]
+        if isinstance(token, tuple) and token and token[0] == "tickers":
+            return [Ticker()]
+        if isinstance(token, tuple) and token and token[0] == "account_updates":
+            raise TimeoutError()
+        return []
+
+    monkeypatch.setattr("mcp_ibkr.ibkr_client.util.run", fake_run)
+
+    result = client.get_pnl_best_effort("U123", [snapshot])
+
+    assert result.positions[0].unrealizedPnl == 215.0
+    assert result.totals.unrealizedPnl == 215.0
 
 
 def test_get_historical_news_handles_none(monkeypatch):

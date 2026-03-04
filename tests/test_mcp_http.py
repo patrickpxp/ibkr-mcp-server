@@ -1,5 +1,5 @@
-from fastapi.testclient import TestClient
 import anyio
+import httpx
 
 import mcp.types as mcp_types
 from mcp_ibkr import server
@@ -48,21 +48,29 @@ class PnlForbiddenClient:
         return ["U1234567"]
 
 
-def _post_mcp(client, payload):
-    return client.post(
-        "/mcp",
-        headers={"Accept": "application/json", "Content-Type": "application/json"},
-        json=payload,
-    )
+async def _post_mcp(app, payload):
+    async with app.router.lifespan_context(app):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://testserver"
+        ) as client:
+            return await client.post(
+                "/mcp",
+                headers={"Accept": "application/json", "Content-Type": "application/json"},
+                json=payload,
+            )
+
+
+def _post_mcp_sync(app, payload):
+    return anyio.run(_post_mcp, app, payload)
 
 
 def test_tools_list_accepts_json_only():
     app = server.create_app()
-    with TestClient(app) as client:
-        response = _post_mcp(
-            client,
-            {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
-        )
+    response = _post_mcp_sync(
+        app,
+        {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
+    )
 
     assert response.status_code == 200
     payload = response.json()
@@ -101,11 +109,10 @@ def test_tools_list_accepts_json_only():
 
 def test_tools_list_includes_metadata_and_schemas():
     app = server.create_app()
-    with TestClient(app) as client:
-        response = _post_mcp(
-            client,
-            {"jsonrpc": "2.0", "id": 10, "method": "tools/list", "params": {}},
-        )
+    response = _post_mcp_sync(
+        app,
+        {"jsonrpc": "2.0", "id": 10, "method": "tools/list", "params": {}},
+    )
 
     assert response.status_code == 200
     payload = response.json()
@@ -124,16 +131,15 @@ def test_tools_call_returns_structured_content(monkeypatch, sample_positions, sa
     monkeypatch.setattr(server, "create_client", lambda: stub)
 
     app = server.create_app()
-    with TestClient(app) as client:
-        response = _post_mcp(
-            client,
-            {
-                "jsonrpc": "2.0",
-                "id": 2,
-                "method": "tools/call",
-                "params": {"name": "ibkr_get_portfolio", "arguments": {}},
-            },
-        )
+    response = _post_mcp_sync(
+        app,
+        {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {"name": "ibkr_get_portfolio", "arguments": {}},
+        },
+    )
 
     assert response.status_code == 200
     payload = response.json()
@@ -154,16 +160,15 @@ def test_tools_call_error_sets_is_error(monkeypatch):
     monkeypatch.setattr(server, "create_client", lambda: FailingClient())
 
     app = server.create_app()
-    with TestClient(app) as client:
-        response = _post_mcp(
-            client,
-            {
-                "jsonrpc": "2.0",
-                "id": 4,
-                "method": "tools/call",
-                "params": {"name": "ibkr_get_portfolio", "arguments": {}},
-            },
-        )
+    response = _post_mcp_sync(
+        app,
+        {
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "tools/call",
+            "params": {"name": "ibkr_get_portfolio", "arguments": {}},
+        },
+    )
 
     assert response.status_code == 200
     payload = response.json()
@@ -177,19 +182,18 @@ def test_tools_call_include_pnl_false_skips_pnl(monkeypatch, sample_positions):
     monkeypatch.setattr(server, "create_client", lambda: stub)
 
     app = server.create_app()
-    with TestClient(app) as client:
-        response = _post_mcp(
-            client,
-            {
-                "jsonrpc": "2.0",
-                "id": 3,
-                "method": "tools/call",
-                "params": {
-                    "name": "ibkr_get_portfolio",
-                    "arguments": {"include_pnl": False},
-                },
+    response = _post_mcp_sync(
+        app,
+        {
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {
+                "name": "ibkr_get_portfolio",
+                "arguments": {"include_pnl": False},
             },
-        )
+        },
+    )
 
     assert response.status_code == 200
     payload = response.json()
@@ -211,7 +215,16 @@ def test_disconnect_called_on_connect_error(monkeypatch):
     client = FailingClient()
     monkeypatch.setattr(server, "create_client", lambda: client)
 
-    response = anyio.run(server.ibkr_get_portfolio.fn)
+    app = server.create_app()
+    response = _post_mcp_sync(
+        app,
+        {
+            "jsonrpc": "2.0",
+            "id": 12,
+            "method": "tools/call",
+            "params": {"name": "ibkr_get_portfolio", "arguments": {}},
+        },
+    ).json()["result"]["structuredContent"]
 
     assert response["error"]["type"] == "TWS_CONNECTION_FAILED"
     assert client.disconnected is True
@@ -229,19 +242,18 @@ def test_trading_confirmation_error_sets_is_error(monkeypatch):
     monkeypatch.setenv("IBKR_ENABLE_TRADING", "true")
 
     app = server.create_app()
-    with TestClient(app) as client:
-        response = _post_mcp(
-            client,
-            {
-                "jsonrpc": "2.0",
-                "id": 11,
-                "method": "tools/call",
-                "params": {
-                    "name": "ibkr_cancel_order",
-                    "arguments": {"orderId": 12345, "confirm": False},
-                },
+    response = _post_mcp_sync(
+        app,
+        {
+            "jsonrpc": "2.0",
+            "id": 11,
+            "method": "tools/call",
+            "params": {
+                "name": "ibkr_cancel_order",
+                "arguments": {"orderId": 12345, "confirm": False},
             },
-        )
+        },
+    )
 
     assert response.status_code == 200
     payload = response.json()

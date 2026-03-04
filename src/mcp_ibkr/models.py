@@ -217,6 +217,19 @@ class ContractDetailsResponse(BaseModel):
     notes: list[str]
 
 
+class OptionGreeksModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    impliedVol: Optional[float] = None
+    delta: Optional[float] = None
+    optPrice: Optional[float] = None
+    pvDividend: Optional[float] = None
+    gamma: Optional[float] = None
+    vega: Optional[float] = None
+    theta: Optional[float] = None
+    undPrice: Optional[float] = None
+
+
 class MarketDataSnapshotModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -230,6 +243,18 @@ class MarketDataSnapshotModel(BaseModel):
     last: Optional[float] = None
     close: Optional[float] = None
     marketPrice: Optional[float] = None
+    delta: Optional[float] = None
+    gamma: Optional[float] = None
+    vega: Optional[float] = None
+    theta: Optional[float] = None
+    impliedVol: Optional[float] = None
+    optPrice: Optional[float] = None
+    undPrice: Optional[float] = None
+    greeksSource: Optional[str] = None
+    modelGreeks: Optional[OptionGreeksModel] = None
+    bidGreeks: Optional[OptionGreeksModel] = None
+    askGreeks: Optional[OptionGreeksModel] = None
+    lastGreeks: Optional[OptionGreeksModel] = None
 
 
 class MarketDataSnapshotResponse(BaseModel):

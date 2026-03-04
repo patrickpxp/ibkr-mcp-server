@@ -837,6 +837,7 @@ class IBKRClient:
         output_positions = [_position_model(snapshot) for snapshot in positions_list]
 
         market_prices: dict[int, float] = {}
+        portfolio_items_by_con_id: dict[int, object] = {}
         market_data_missing = False
         if positions_list:
             try:
@@ -858,15 +859,80 @@ class IBKRClient:
             except Exception:
                 logger.warning("market data request failed", exc_info=True)
 
+            def _collect_portfolio_items(target_account: str) -> list[object]:
+                items = list(self.ib.portfolio(target_account))
+                if items or not target_account:
+                    return items
+                # Fallback: some gateways don't return account-filtered rows reliably.
+                return [
+                    item
+                    for item in self.ib.portfolio()
+                    if getattr(item, "account", None) == target_account
+                ]
+
+            try:
+                target_account = account or ""
+                portfolio_items = _collect_portfolio_items(target_account)
+                util.run(
+                    self.ib.reqAccountUpdatesAsync(target_account),
+                    timeout=min(self.timeout_seconds, 2),
+                )
+                refreshed_items = _collect_portfolio_items(target_account)
+                if refreshed_items:
+                    portfolio_items = refreshed_items
+                for item in portfolio_items:
+                    contract = getattr(item, "contract", None)
+                    con_id = _to_int(getattr(contract, "conId", None)) if contract else None
+                    if con_id is not None:
+                        portfolio_items_by_con_id[con_id] = item
+            except TimeoutError:
+                logger.info("portfolio refresh timed out; using cached portfolio rows")
+                target_account = account or ""
+                for item in _collect_portfolio_items(target_account):
+                    contract = getattr(item, "contract", None)
+                    con_id = _to_int(getattr(contract, "conId", None)) if contract else None
+                    if con_id is not None:
+                        portfolio_items_by_con_id[con_id] = item
+            except Exception:
+                logger.warning("portfolio P&L request failed", exc_info=True)
+            finally:
+                try:
+                    self.ib.client.reqAccountUpdates(False, account or "")
+                except Exception:
+                    logger.warning("account updates unsubscribe failed", exc_info=True)
+
         for position in output_positions:
+            portfolio_item = portfolio_items_by_con_id.get(position.conId)
             price = market_prices.get(position.conId)
+            if price is None and portfolio_item is not None:
+                price = _to_float(getattr(portfolio_item, "marketPrice", None))
             if price is None:
                 market_data_missing = True
-                continue
-            position.marketPrice = price
-            position.marketValue = price * position.position
-            if position.avgCost is not None:
-                position.unrealizedPnl = (price - position.avgCost) * position.position
+            else:
+                position.marketPrice = price
+                portfolio_market_value = (
+                    _to_float(getattr(portfolio_item, "marketValue", None))
+                    if portfolio_item is not None
+                    else None
+                )
+                position.marketValue = (
+                    portfolio_market_value
+                    if portfolio_market_value is not None
+                    else price * position.position
+                )
+                if position.avgCost is not None:
+                    position.unrealizedPnl = (price - position.avgCost) * position.position
+
+            if portfolio_item is not None:
+                portfolio_unrealized = _to_float(
+                    getattr(portfolio_item, "unrealizedPNL", None)
+                )
+                if portfolio_unrealized is not None:
+                    position.unrealizedPnl = portfolio_unrealized
+
+                portfolio_realized = _to_float(getattr(portfolio_item, "realizedPNL", None))
+                if portfolio_realized is not None:
+                    position.realizedPnl = portfolio_realized
 
         total_unrealized = None
         unrealized_values = [
@@ -878,6 +944,15 @@ class IBKRClient:
             total_unrealized = sum(unrealized_values)
         elif output_positions:
             market_data_missing = True
+
+        total_realized = None
+        realized_values = [
+            pos.realizedPnl
+            for pos in output_positions
+            if pos.realizedPnl is not None
+        ]
+        if realized_values:
+            total_realized = sum(realized_values)
 
         net_liquidation = None
         currency = None
@@ -897,11 +972,12 @@ class IBKRClient:
 
         if market_data_missing:
             notes.append("market data unavailable for some positions; prices and P&L set to null where missing")
-        notes.append("realizedPnl not available via current implementation")
+        if total_realized is None:
+            notes.append("realizedPnl not available via current implementation")
 
         totals = TotalsModel(
             unrealizedPnl=total_unrealized,
-            realizedPnl=None,
+            realizedPnl=total_realized,
             netLiquidation=net_liquidation,
         )
 

@@ -1,5 +1,3 @@
-import anyio
-
 from mcp_ibkr import server
 from mcp_ibkr.ibkr_client import IBKRConnectionError
 
@@ -15,7 +13,7 @@ class FailingClient:
 def test_offline_mode(monkeypatch):
     monkeypatch.setattr(server, "create_client", lambda: FailingClient())
 
-    response = anyio.run(server.ibkr_get_portfolio.fn)
+    response = server._ibkr_get_portfolio_sync()
 
     assert "error" in response
     error = response["error"]

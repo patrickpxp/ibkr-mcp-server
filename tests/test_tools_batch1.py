@@ -1,7 +1,5 @@
 import datetime
 
-import anyio
-
 from mcp_ibkr import server
 
 
@@ -105,6 +103,38 @@ class StubTicker:
         return 172.3
 
 
+class StubGreeks:
+    def __init__(self):
+        self.impliedVol = 0.22
+        self.delta = 0.41
+        self.optPrice = 4.5
+        self.pvDividend = 0.0
+        self.gamma = 0.03
+        self.vega = 0.12
+        self.theta = -0.08
+        self.undPrice = 172.3
+
+
+class StubOptionTicker:
+    def __init__(self):
+        self.contract = StubContract()
+        self.contract.secType = "OPT"
+        self.contract.symbol = "AAPL"
+        self.contract.exchange = "SMART"
+        self.contract.currency = "USD"
+        self.bid = 4.4
+        self.ask = 4.6
+        self.last = 4.5
+        self.close = 4.2
+        self.modelGreeks = StubGreeks()
+        self.bidGreeks = None
+        self.askGreeks = None
+        self.lastGreeks = None
+
+    def marketPrice(self):
+        return 4.5
+
+
 class StubClient:
     def connect(self) -> None:
         return None
@@ -137,14 +167,37 @@ class StubClient:
         return [StubTicker()], []
 
 
+class StubOptionSnapshotClient(StubClient):
+    def get_market_data_snapshot(self, contracts, regulatory_snapshot=False):
+        return [StubOptionTicker()], []
+
+
+class _StubMarketDataTypeIB:
+    def __init__(self):
+        self.last_market_data_type = None
+
+    def reqMarketDataType(self, value):
+        self.last_market_data_type = value
+
+
+class StubMarketDataTypeClient(StubClient):
+    def __init__(self):
+        self.ib = _StubMarketDataTypeIB()
+
+
 def _use_stub(monkeypatch):
     monkeypatch.setattr(server, "create_client", lambda: StubClient())
+
+
+def _run_tool_sync(tool_fn, *args):
+    sync_fn = getattr(server, f"_{tool_fn.__name__}_sync")
+    return sync_fn(*args)
 
 
 def test_account_summary_tool(monkeypatch):
     _use_stub(monkeypatch)
 
-    response = anyio.run(server.ibkr_get_account_summary.fn)
+    response = _run_tool_sync(server.ibkr_get_account_summary.fn)
 
     assert response["account"] == "U123"
     assert response["items"]
@@ -153,7 +206,7 @@ def test_account_summary_tool(monkeypatch):
 def test_account_values_tool(monkeypatch):
     _use_stub(monkeypatch)
 
-    response = anyio.run(server.ibkr_get_account_values.fn)
+    response = _run_tool_sync(server.ibkr_get_account_values.fn)
 
     assert response["account"] == "U123"
     assert response["items"]
@@ -162,7 +215,7 @@ def test_account_values_tool(monkeypatch):
 def test_open_orders_tool(monkeypatch):
     _use_stub(monkeypatch)
 
-    response = anyio.run(server.ibkr_get_open_orders.fn)
+    response = _run_tool_sync(server.ibkr_get_open_orders.fn)
 
     assert response["orders"]
     assert response["orders"][0]["orderId"] == 1
@@ -171,7 +224,7 @@ def test_open_orders_tool(monkeypatch):
 def test_executions_tool(monkeypatch):
     _use_stub(monkeypatch)
 
-    response = anyio.run(server.ibkr_get_executions.fn)
+    response = _run_tool_sync(server.ibkr_get_executions.fn)
 
     assert response["executions"]
     assert response["executions"][0]["execId"] == "1"
@@ -180,7 +233,7 @@ def test_executions_tool(monkeypatch):
 def test_search_symbols_tool(monkeypatch):
     _use_stub(monkeypatch)
 
-    response = anyio.run(server.ibkr_search_symbols.fn, "AAP")
+    response = _run_tool_sync(server.ibkr_search_symbols.fn, "AAP")
 
     assert response["matches"]
     assert response["matches"][0]["symbol"] == "AAPL"
@@ -189,7 +242,7 @@ def test_search_symbols_tool(monkeypatch):
 def test_contract_details_tool(monkeypatch):
     _use_stub(monkeypatch)
 
-    response = anyio.run(
+    response = _run_tool_sync(
         server.ibkr_get_contract_details.fn,
         {"symbol": "AAPL", "secType": "STK", "exchange": "SMART", "currency": "USD"},
     )
@@ -201,7 +254,7 @@ def test_contract_details_tool(monkeypatch):
 def test_market_data_snapshot_tool(monkeypatch):
     _use_stub(monkeypatch)
 
-    response = anyio.run(
+    response = _run_tool_sync(
         server.ibkr_get_market_data_snapshot.fn,
         [{"symbol": "AAPL", "secType": "STK", "exchange": "SMART", "currency": "USD"}],
         False,
@@ -209,3 +262,50 @@ def test_market_data_snapshot_tool(monkeypatch):
 
     assert response["snapshots"]
     assert response["snapshots"][0]["last"] == 172.3
+
+
+def test_market_data_snapshot_option_includes_delta(monkeypatch):
+    monkeypatch.setattr(server, "create_client", lambda: StubOptionSnapshotClient())
+
+    response = _run_tool_sync(
+        server.ibkr_get_market_data_snapshot.fn,
+        [
+            {
+                "symbol": "AAPL",
+                "secType": "OPT",
+                "exchange": "SMART",
+                "currency": "USD",
+                "lastTradeDateOrContractMonth": "20250117",
+                "strike": 170,
+                "right": "C",
+            }
+        ],
+        False,
+    )
+
+    assert response["snapshots"]
+    snapshot = response["snapshots"][0]
+    assert snapshot["secType"] == "OPT"
+    assert snapshot["delta"] == 0.41
+    assert snapshot["gamma"] == 0.03
+    assert snapshot["vega"] == 0.12
+    assert snapshot["theta"] == -0.08
+    assert snapshot["impliedVol"] == 0.22
+    assert snapshot["optPrice"] == 4.5
+    assert snapshot["undPrice"] == 172.3
+    assert snapshot["greeksSource"] == "model"
+
+
+def test_market_data_snapshot_sets_market_data_type(monkeypatch):
+    client = StubMarketDataTypeClient()
+    monkeypatch.setattr(server, "create_client", lambda: client)
+
+    response = _run_tool_sync(
+        server.ibkr_get_market_data_snapshot.fn,
+        [{"symbol": "AAPL", "secType": "STK", "exchange": "SMART", "currency": "USD"}],
+        False,
+        2,
+    )
+
+    assert client.ib.last_market_data_type == 2
+    assert any("market data type set to 2" in note for note in response["notes"])
