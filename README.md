@@ -72,13 +72,13 @@ curl -s -X POST http://localhost:${MCP_PORT:-8000}/mcp \
 - `ibkr_get_executions`: Executions/fills with basic execution details.
 - `ibkr_search_symbols`: Symbol lookup via matching symbols.
 - `ibkr_get_contract_details`: Contract details for a given contract input.
-- `ibkr_get_market_data_snapshot`: One-shot market data snapshot for contracts (IBIS requests are normalized to SMART + primaryExchange=IBIS).
+- `ibkr_get_market_data_snapshot`: One-shot market data snapshot for contracts (includes option greeks such as delta when available; supports optional `market_data_type` override; IBIS requests are normalized to SMART + primaryExchange=IBIS).
 - `ibkr_debug_market_data_snapshot`: Diagnostic snapshot that compares raw vs SMART+primaryExchange requests.
 - `ibkr_get_historical_bars`: Historical OHLCV bars for a contract.
 - `ibkr_get_historical_ticks`: Historical ticks (bid/ask/trades/midpoint) for a contract.
 - `ibkr_get_head_timestamp`: Earliest available historical data timestamp for a contract.
 - `ibkr_get_market_depth_snapshot`: One-shot market depth (L2) snapshot for a contract.
-- `ibkr_get_option_chain`: Option chain metadata (expirations/strikes) for an underlying.
+- `ibkr_get_option_chain`: Option chain metadata (expirations/strikes) for an underlying. Use `ibkr_get_market_data_snapshot` on specific option contracts to retrieve greeks.
 - `ibkr_get_news_providers`: Available news provider codes/names.
 - `ibkr_get_historical_news`: Historical news headlines for a contract.
 - `ibkr_get_news_article`: News article body for a provider/article id.

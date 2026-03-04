@@ -1,7 +1,5 @@
 import datetime
 
-import anyio
-
 from mcp_ibkr import server
 
 
@@ -146,10 +144,15 @@ def _use_stub(monkeypatch):
     monkeypatch.setattr(server, "create_client", lambda: StubClient())
 
 
+def _run_tool_sync(tool_fn, *args):
+    sync_fn = getattr(server, f"_{tool_fn.__name__}_sync")
+    return sync_fn(*args)
+
+
 def test_historical_bars_tool(monkeypatch):
     _use_stub(monkeypatch)
 
-    response = anyio.run(
+    response = _run_tool_sync(
         server.ibkr_get_historical_bars.fn,
         {"symbol": "AAPL", "secType": "STK", "exchange": "SMART", "currency": "USD"},
         "20240102 16:00:00",
@@ -167,7 +170,7 @@ def test_historical_bars_tool(monkeypatch):
 def test_historical_ticks_tool(monkeypatch):
     _use_stub(monkeypatch)
 
-    response = anyio.run(
+    response = _run_tool_sync(
         server.ibkr_get_historical_ticks.fn,
         {"symbol": "AAPL", "secType": "STK", "exchange": "SMART", "currency": "USD"},
         "20240102 15:00:00",
@@ -186,7 +189,7 @@ def test_historical_ticks_tool(monkeypatch):
 def test_head_timestamp_tool(monkeypatch):
     _use_stub(monkeypatch)
 
-    response = anyio.run(
+    response = _run_tool_sync(
         server.ibkr_get_head_timestamp.fn,
         {"symbol": "AAPL", "secType": "STK", "exchange": "SMART", "currency": "USD"},
         "TRADES",
@@ -200,7 +203,7 @@ def test_head_timestamp_tool(monkeypatch):
 def test_market_depth_snapshot_tool(monkeypatch):
     _use_stub(monkeypatch)
 
-    response = anyio.run(
+    response = _run_tool_sync(
         server.ibkr_get_market_depth_snapshot.fn,
         {"symbol": "AAPL", "secType": "STK", "exchange": "SMART", "currency": "USD"},
         5,
@@ -215,7 +218,7 @@ def test_market_depth_snapshot_tool(monkeypatch):
 def test_option_chain_tool(monkeypatch):
     _use_stub(monkeypatch)
 
-    response = anyio.run(
+    response = _run_tool_sync(
         server.ibkr_get_option_chain.fn,
         "AAPL",
         "SMART",
@@ -225,12 +228,13 @@ def test_option_chain_tool(monkeypatch):
 
     assert response["chains"]
     assert response["chains"][0]["exchange"] == "SMART"
+    assert any("metadata only" in note for note in response["notes"])
 
 
 def test_news_providers_tool(monkeypatch):
     _use_stub(monkeypatch)
 
-    response = anyio.run(server.ibkr_get_news_providers.fn)
+    response = _run_tool_sync(server.ibkr_get_news_providers.fn)
 
     assert response["providers"]
     assert response["providers"][0]["code"] == "BZ"
@@ -239,7 +243,7 @@ def test_news_providers_tool(monkeypatch):
 def test_historical_news_tool(monkeypatch):
     _use_stub(monkeypatch)
 
-    response = anyio.run(
+    response = _run_tool_sync(
         server.ibkr_get_historical_news.fn,
         {"symbol": "AAPL", "secType": "STK", "exchange": "SMART", "currency": "USD"},
         "BZ",
@@ -259,7 +263,7 @@ def test_historical_news_tool_missing_entitlement(monkeypatch):
 
     monkeypatch.setattr(server, "create_client", lambda: NoProviderClient())
 
-    response = anyio.run(
+    response = _run_tool_sync(
         server.ibkr_get_historical_news.fn,
         {"symbol": "AAPL", "secType": "STK", "exchange": "SMART", "currency": "USD"},
         "BZ",
@@ -275,7 +279,7 @@ def test_historical_news_tool_missing_entitlement(monkeypatch):
 def test_fundamental_data_tool(monkeypatch):
     _use_stub(monkeypatch)
 
-    response = anyio.run(
+    response = _run_tool_sync(
         server.ibkr_get_fundamental_data.fn,
         {"symbol": "AAPL", "secType": "STK", "exchange": "SMART", "currency": "USD"},
         "ReportSnapshot",
@@ -288,7 +292,7 @@ def test_fundamental_data_tool(monkeypatch):
 def test_scanner_params_tool(monkeypatch):
     _use_stub(monkeypatch)
 
-    response = anyio.run(server.ibkr_get_scanner_params.fn)
+    response = _run_tool_sync(server.ibkr_get_scanner_params.fn)
 
     assert response["params"]
     assert "scanner" in response["params"]
@@ -297,7 +301,7 @@ def test_scanner_params_tool(monkeypatch):
 def test_run_scanner_tool(monkeypatch):
     _use_stub(monkeypatch)
 
-    response = anyio.run(
+    response = _run_tool_sync(
         server.ibkr_run_scanner.fn,
         {"instrument": "STK", "locationCode": "STK.US", "scanCode": "TOP_PERC_GAIN"},
     )
@@ -309,7 +313,7 @@ def test_run_scanner_tool(monkeypatch):
 def test_news_article_tool(monkeypatch):
     _use_stub(monkeypatch)
 
-    response = anyio.run(
+    response = _run_tool_sync(
         server.ibkr_get_news_article.fn,
         "BZ",
         "123",

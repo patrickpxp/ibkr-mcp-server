@@ -54,6 +54,7 @@ from .models import (
     NewsProvidersResponse,
     OpenOrderModel,
     OpenOrdersResponse,
+    OptionGreeksModel,
     OrderStateModel,
     OptionChainModel,
     OptionChainResponse,
@@ -530,6 +531,115 @@ def _contract_model(contract: object | None) -> ContractModel:
     )
 
 
+def _greeks_model(value: object | None) -> OptionGreeksModel | None:
+    if value is None:
+        return None
+    model = OptionGreeksModel(
+        impliedVol=_optional_float(getattr(value, "impliedVol", None)),
+        delta=_optional_float(getattr(value, "delta", None)),
+        optPrice=_optional_float(getattr(value, "optPrice", None)),
+        pvDividend=_optional_float(getattr(value, "pvDividend", None)),
+        gamma=_optional_float(getattr(value, "gamma", None)),
+        vega=_optional_float(getattr(value, "vega", None)),
+        theta=_optional_float(getattr(value, "theta", None)),
+        undPrice=_optional_float(getattr(value, "undPrice", None)),
+    )
+    if all(
+        getattr(model, field) is None
+        for field in (
+            "impliedVol",
+            "delta",
+            "optPrice",
+            "pvDividend",
+            "gamma",
+            "vega",
+            "theta",
+            "undPrice",
+        )
+    ):
+        return None
+    return model
+
+
+def _select_preferred_greeks(
+    model_greeks: OptionGreeksModel | None,
+    last_greeks: OptionGreeksModel | None,
+    bid_greeks: OptionGreeksModel | None,
+    ask_greeks: OptionGreeksModel | None,
+) -> tuple[OptionGreeksModel | None, str | None]:
+    ordered = [
+        ("model", model_greeks),
+        ("last", last_greeks),
+        ("bid", bid_greeks),
+        ("ask", ask_greeks),
+    ]
+    for source, greeks in ordered:
+        if greeks is not None and greeks.delta is not None:
+            return greeks, source
+    for source, greeks in ordered:
+        if greeks is not None:
+            return greeks, source
+    return None, None
+
+
+def _snapshot_from_ticker(ticker: object) -> MarketDataSnapshotModel:
+    contract = getattr(ticker, "contract", None)
+    market_price_value = getattr(ticker, "marketPrice", None)
+    if callable(market_price_value):
+        market_price_value = market_price_value()
+
+    model_greeks = _greeks_model(getattr(ticker, "modelGreeks", None))
+    bid_greeks = _greeks_model(getattr(ticker, "bidGreeks", None))
+    ask_greeks = _greeks_model(getattr(ticker, "askGreeks", None))
+    last_greeks = _greeks_model(getattr(ticker, "lastGreeks", None))
+    preferred_greeks, source = _select_preferred_greeks(
+        model_greeks,
+        last_greeks,
+        bid_greeks,
+        ask_greeks,
+    )
+
+    return MarketDataSnapshotModel(
+        conId=getattr(contract, "conId", None),
+        symbol=getattr(contract, "symbol", None),
+        secType=getattr(contract, "secType", None),
+        exchange=getattr(contract, "exchange", None),
+        currency=getattr(contract, "currency", None),
+        bid=_optional_float(getattr(ticker, "bid", None)),
+        ask=_optional_float(getattr(ticker, "ask", None)),
+        last=_optional_float(getattr(ticker, "last", None)),
+        close=_optional_float(getattr(ticker, "close", None)),
+        marketPrice=_optional_float(market_price_value),
+        delta=getattr(preferred_greeks, "delta", None),
+        gamma=getattr(preferred_greeks, "gamma", None),
+        vega=getattr(preferred_greeks, "vega", None),
+        theta=getattr(preferred_greeks, "theta", None),
+        impliedVol=getattr(preferred_greeks, "impliedVol", None),
+        optPrice=getattr(preferred_greeks, "optPrice", None),
+        undPrice=getattr(preferred_greeks, "undPrice", None),
+        greeksSource=source,
+        modelGreeks=model_greeks,
+        bidGreeks=bid_greeks,
+        askGreeks=ask_greeks,
+        lastGreeks=last_greeks,
+    )
+
+
+def _append_option_greeks_note(
+    snapshots: list[MarketDataSnapshotModel],
+    notes: list[str],
+) -> None:
+    option_snapshots = [
+        snapshot
+        for snapshot in snapshots
+        if (snapshot.secType or "").upper() in {"OPT", "FOP"}
+    ]
+    if option_snapshots and all(snapshot.delta is None for snapshot in option_snapshots):
+        notes.append(
+            "option greeks unavailable in snapshot; ensure market data subscriptions for options and underlying"
+        )
+
+
 def _trading_enabled() -> bool:
     return _env_bool("IBKR_ENABLE_TRADING", False)
 
@@ -957,6 +1067,7 @@ async def ibkr_get_contract_details(contract: ContractInput) -> dict:
 def _ibkr_get_market_data_snapshot_sync(
     contracts: Iterable[dict],
     regulatory_snapshot: bool = False,
+    market_data_type: int | None = None,
 ) -> dict:
     def action(client: IBKRClient) -> dict:
         notes: list[str] = []
@@ -970,6 +1081,12 @@ def _ibkr_get_market_data_snapshot_sync(
                 contract_list.append(IBKRClient.contract_from_input(item))
             except ValueError as exc:
                 return _error_response("INVALID_ARGUMENT", str(exc), False)
+        if market_data_type is not None:
+            try:
+                client.ib.reqMarketDataType(int(market_data_type))
+                notes.append(f"market data type set to {int(market_data_type)}")
+            except Exception as exc:
+                notes.append(f"market data type set failed: {exc}")
         snapshots = []
         tickers, qualification_notes = client.get_market_data_snapshot(
             contract_list,
@@ -977,24 +1094,8 @@ def _ibkr_get_market_data_snapshot_sync(
         )
         notes.extend(qualification_notes)
         for ticker in tickers:
-            contract = getattr(ticker, "contract", None)
-            market_price_value = getattr(ticker, "marketPrice", None)
-            if callable(market_price_value):
-                market_price_value = market_price_value()
-            snapshots.append(
-                MarketDataSnapshotModel(
-                    conId=getattr(contract, "conId", None),
-                    symbol=getattr(contract, "symbol", None),
-                    secType=getattr(contract, "secType", None),
-                    exchange=getattr(contract, "exchange", None),
-                    currency=getattr(contract, "currency", None),
-                    bid=_optional_float(getattr(ticker, "bid", None)),
-                    ask=_optional_float(getattr(ticker, "ask", None)),
-                    last=_optional_float(getattr(ticker, "last", None)),
-                    close=_optional_float(getattr(ticker, "close", None)),
-                    marketPrice=_optional_float(market_price_value),
-                )
-            )
+            snapshots.append(_snapshot_from_ticker(ticker))
+        _append_option_greeks_note(snapshots, notes)
         response = MarketDataSnapshotResponse(snapshots=snapshots, notes=notes)
         return response.model_dump()
 
@@ -1009,11 +1110,13 @@ def _ibkr_get_market_data_snapshot_sync(
 async def ibkr_get_market_data_snapshot(
     contracts: ContractsInput,
     regulatory_snapshot: RegulatorySnapshot = False,
+    market_data_type: MarketDataType = None,
 ) -> dict:
     return await anyio.to_thread.run_sync(
         _ibkr_get_market_data_snapshot_sync,
         contracts,
         regulatory_snapshot,
+        market_data_type,
     )
 
 
@@ -1319,6 +1422,9 @@ def _ibkr_get_option_chain_sync(
                 con_id,
             )
         ]
+        notes.append(
+            "option chain returns metadata only (expirations/strikes); use ibkr_get_market_data_snapshot on option contracts for greeks like delta"
+        )
         if not chains:
             notes.append("no option chain entries returned")
         response = OptionChainResponse(chains=chains, notes=notes)
@@ -2098,24 +2204,8 @@ def _ibkr_debug_market_data_snapshot_sync(
                 regulatory_snapshot=regulatory_snapshot,
             )
             for ticker in tickers:
-                contract_value = getattr(ticker, "contract", None)
-                market_price_value = getattr(ticker, "marketPrice", None)
-                if callable(market_price_value):
-                    market_price_value = market_price_value()
-                snapshots.append(
-                    MarketDataSnapshotModel(
-                        conId=getattr(contract_value, "conId", None),
-                        symbol=getattr(contract_value, "symbol", None),
-                        secType=getattr(contract_value, "secType", None),
-                        exchange=getattr(contract_value, "exchange", None),
-                        currency=getattr(contract_value, "currency", None),
-                        bid=_optional_float(getattr(ticker, "bid", None)),
-                        ask=_optional_float(getattr(ticker, "ask", None)),
-                        last=_optional_float(getattr(ticker, "last", None)),
-                        close=_optional_float(getattr(ticker, "close", None)),
-                        marketPrice=_optional_float(market_price_value),
-                    )
-                )
+                snapshots.append(_snapshot_from_ticker(ticker))
+            _append_option_greeks_note(snapshots, attempt_notes)
             return MarketDataSnapshotAttempt(
                 request=_contract_model(contract_obj),
                 snapshots=snapshots,

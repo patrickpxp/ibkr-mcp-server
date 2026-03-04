@@ -1,5 +1,3 @@
-import anyio
-
 from mcp_ibkr import server
 
 
@@ -165,9 +163,14 @@ def _use_stub(monkeypatch):
     return stub
 
 
+def _run_tool_sync(tool_fn, *args):
+    sync_fn = getattr(server, f"_{tool_fn.__name__}_sync")
+    return sync_fn(*args)
+
+
 def test_preview_order_tool(monkeypatch):
     _use_stub(monkeypatch)
-    response = anyio.run(
+    response = _run_tool_sync(
         server.ibkr_preview_order.fn,
         {"symbol": "AAPL", "secType": "STK", "exchange": "SMART", "currency": "USD"},
         {"action": "BUY", "totalQuantity": 10, "orderType": "LMT", "lmtPrice": 170.0},
@@ -177,7 +180,7 @@ def test_preview_order_tool(monkeypatch):
 
 def test_place_order_defaults_to_dry_run(monkeypatch):
     stub = _use_stub(monkeypatch)
-    response = anyio.run(
+    response = _run_tool_sync(
         server.ibkr_place_order.fn,
         {"symbol": "AAPL", "secType": "STK", "exchange": "SMART", "currency": "USD"},
         {"action": "BUY", "totalQuantity": 10, "orderType": "LMT", "lmtPrice": 170.0},
@@ -190,7 +193,7 @@ def test_place_order_defaults_to_dry_run(monkeypatch):
 def test_place_order_enforces_trading_gate(monkeypatch):
     _use_stub(monkeypatch)
     monkeypatch.setenv("IBKR_ENABLE_TRADING", "false")
-    response = anyio.run(
+    response = _run_tool_sync(
         server.ibkr_place_order.fn,
         {"symbol": "AAPL", "secType": "STK", "exchange": "SMART", "currency": "USD"},
         {"action": "BUY", "totalQuantity": 10, "orderType": "LMT", "lmtPrice": 170.0},
@@ -204,7 +207,7 @@ def test_place_order_enforces_trading_gate(monkeypatch):
 def test_place_order_execute_uses_transmit_default_false(monkeypatch):
     stub = _use_stub(monkeypatch)
     monkeypatch.setenv("IBKR_ENABLE_TRADING", "true")
-    response = anyio.run(
+    response = _run_tool_sync(
         server.ibkr_place_order.fn,
         {"symbol": "AAPL", "secType": "STK", "exchange": "SMART", "currency": "USD"},
         {"action": "BUY", "totalQuantity": 10, "orderType": "LMT", "lmtPrice": 170.0},
@@ -219,14 +222,14 @@ def test_place_order_execute_uses_transmit_default_false(monkeypatch):
 def test_cancel_order_requires_confirm(monkeypatch):
     _use_stub(monkeypatch)
     monkeypatch.setenv("IBKR_ENABLE_TRADING", "true")
-    response = anyio.run(server.ibkr_cancel_order.fn, 12345, False)
+    response = _run_tool_sync(server.ibkr_cancel_order.fn, 12345, False)
     assert response["error"]["type"] == "CONFIRM_REQUIRED"
 
 
 def test_bracket_order_execute_transmit_default_false(monkeypatch):
     stub = _use_stub(monkeypatch)
     monkeypatch.setenv("IBKR_ENABLE_TRADING", "true")
-    response = anyio.run(
+    response = _run_tool_sync(
         server.ibkr_bracket_order.fn,
         {"symbol": "AAPL", "secType": "STK", "exchange": "SMART", "currency": "USD"},
         "BUY",
@@ -245,7 +248,7 @@ def test_bracket_order_execute_transmit_default_false(monkeypatch):
 def test_oca_group_execute_transmit_default_false(monkeypatch):
     stub = _use_stub(monkeypatch)
     monkeypatch.setenv("IBKR_ENABLE_TRADING", "true")
-    response = anyio.run(
+    response = _run_tool_sync(
         server.ibkr_oca_group.fn,
         [
             {
@@ -277,7 +280,7 @@ def test_oca_group_execute_transmit_default_false(monkeypatch):
 def test_exercise_options_requires_confirm(monkeypatch):
     _use_stub(monkeypatch)
     monkeypatch.setenv("IBKR_ENABLE_TRADING", "true")
-    response = anyio.run(
+    response = _run_tool_sync(
         server.ibkr_exercise_options.fn,
         {"symbol": "AAPL", "secType": "OPT", "exchange": "SMART", "currency": "USD"},
         1,
