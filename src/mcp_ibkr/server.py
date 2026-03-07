@@ -1,7 +1,7 @@
 import logging
 import os
 from dataclasses import fields as dataclass_fields, is_dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Annotated, Any, Iterable
 from zoneinfo import ZoneInfo
@@ -26,6 +26,10 @@ from .models import (
     AccountSummaryResponse,
     AccountValueItem,
     AccountValuesResponse,
+    CashActivityItem,
+    CashActivityResponse,
+    DividendItem,
+    DividendsResponse,
     ContractDetailsModel,
     ContractDetailsResponse,
     ContractModel,
@@ -34,6 +38,7 @@ from .models import (
     ExerciseOptionsResponse,
     ExecutionModel,
     ExecutionsResponse,
+    FlexStatementResponse,
     GlobalCancelResponse,
     FundamentalDataResponse,
     HeadTimestampResponse,
@@ -68,10 +73,27 @@ from .models import (
     ScannerDataResponse,
     ScannerParamsResponse,
     ScannerResultModel,
+    StatementSummaryResponse,
+    StatementTopicItem,
+    StatementTopicsResponse,
+    TradeConfirmationItem,
+    TradeConfirmationsResponse,
     SymbolMatchModel,
     SymbolMatchesResponse,
     TradeSnapshotModel,
     TotalsModel,
+    TransactionModel,
+    TransactionsResponse,
+)
+from .statement_client import (
+    CashActivityEntry,
+    DividendEntry,
+    StatementSummary,
+    StatementTopicEntry,
+    StatementClient,
+    StatementConfigError,
+    StatementRequestError,
+    TradeConfirmationEntry,
 )
 
 logger = logging.getLogger(__name__)
@@ -370,6 +392,10 @@ ResponseFormat = Annotated[
     str,
     Field(description="Output format: json (default) or xml."),
 ]
+QueryId = Annotated[
+    str | None,
+    Field(description="IBKR Flex query identifier. Defaults to IBKR_FLEX_QUERY_ID."),
+]
 MarketDataType = Annotated[
     int | None,
     Field(description="IB market data type override."),
@@ -392,6 +418,16 @@ ExecutionSide = Annotated[
 ]
 ExecutionTime = Annotated[
     str | None, Field(description="Execution time filter string.")
+]
+FromTime = Annotated[
+    str | None, Field(description="Start timestamp filter for transactions (ISO-8601 preferred).")
+]
+ToTime = Annotated[
+    str | None, Field(description="End timestamp filter for transactions (ISO-8601 preferred).")
+]
+ResultLimit = Annotated[
+    int,
+    Field(description="Maximum number of transactions to return."),
 ]
 OrderInput = Annotated[
     dict,
@@ -491,6 +527,70 @@ def _format_time(value: object) -> str | None:
         except Exception:
             pass
     return str(value)
+
+
+def _parse_time_filter(value: str | None) -> datetime | None:
+    if value is None:
+        return None
+    candidate = value.strip()
+    if not candidate:
+        return None
+    normalized = candidate.replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(normalized)
+        if parsed.tzinfo is not None:
+            return parsed.astimezone(timezone.utc).replace(tzinfo=None)
+        return parsed
+    except ValueError:
+        pass
+    for fmt in ("%Y%m%d %H:%M:%S", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return datetime.strptime(candidate, fmt)
+        except ValueError:
+            continue
+    raise ValueError(f"invalid timestamp '{value}'")
+
+
+def _execution_side_multiplier(side: object) -> int | None:
+    normalized = str(side or "").strip().upper()
+    if normalized in {"BOT", "BUY"}:
+        return -1
+    if normalized in {"SLD", "SELL"}:
+        return 1
+    return None
+
+
+def _transaction_model(fill: object) -> TransactionModel:
+    execution = getattr(fill, "execution", None)
+    commission_report = getattr(fill, "commissionReport", None)
+    side = getattr(execution, "side", None)
+    quantity = _optional_float(getattr(execution, "shares", None))
+    price = _optional_float(getattr(execution, "price", None))
+    gross_amount = (
+        abs(quantity * price) if quantity is not None and price is not None else None
+    )
+    commission = _optional_float(getattr(commission_report, "commission", None))
+    realized_pnl = _optional_float(getattr(commission_report, "realizedPNL", None))
+    multiplier = _execution_side_multiplier(side)
+    net_amount = None
+    if gross_amount is not None and multiplier is not None:
+        net_amount = (gross_amount * multiplier) - (commission or 0.0)
+    return TransactionModel(
+        execId=getattr(execution, "execId", None),
+        orderId=getattr(execution, "orderId", None),
+        permId=getattr(execution, "permId", None),
+        account=getattr(execution, "acctNumber", None),
+        time=_format_time(getattr(fill, "time", None)),
+        side=side,
+        quantity=quantity,
+        price=price,
+        grossAmount=gross_amount,
+        commission=commission,
+        commissionCurrency=getattr(commission_report, "currency", None),
+        realizedPnl=realized_pnl,
+        netAmount=net_amount,
+        contract=_contract_model(getattr(fill, "contract", None)),
+    )
 
 
 def _optional_float(value: object) -> float | None:
@@ -740,6 +840,23 @@ def _run_with_client(action) -> dict:
         client.disconnect()
 
 
+def create_statement_client() -> StatementClient:
+    return StatementClient.from_env()
+
+
+def _run_with_statement_client(action) -> dict:
+    try:
+        client = create_statement_client()
+        return action(client)
+    except StatementConfigError as exc:
+        return _error_response("STATEMENT_CONFIG_ERROR", str(exc), False)
+    except StatementRequestError as exc:
+        return _error_response("STATEMENT_REQUEST_FAILED", str(exc), exc.retryable)
+    except Exception as exc:
+        logger.exception("statement tool failed")
+        return _error_response("INTERNAL_ERROR", str(exc), False)
+
+
 def _ibkr_get_portfolio_sync(
     account: str | None = None,
     include_pnl: bool = True,
@@ -973,6 +1090,103 @@ async def ibkr_get_executions(
         exchange,
         side,
         time,
+    )
+
+
+def _ibkr_get_transactions_sync(
+    account: str | None = None,
+    symbol: str | None = None,
+    secType: str | None = None,
+    exchange: str | None = None,
+    side: str | None = None,
+    fromTime: str | None = None,
+    toTime: str | None = None,
+    limit: int = 100,
+) -> dict:
+    def action(client: IBKRClient) -> dict:
+        try:
+            start_dt = _parse_time_filter(fromTime)
+            end_dt = _parse_time_filter(toTime)
+        except ValueError as exc:
+            return _error_response("INVALID_ARGUMENT", str(exc), False)
+        if start_dt and end_dt and start_dt > end_dt:
+            return _error_response("INVALID_ARGUMENT", "fromTime must be <= toTime", False)
+        normalized_limit = _optional_int(limit)
+        if normalized_limit is None or normalized_limit <= 0:
+            return _error_response("INVALID_ARGUMENT", "limit must be a positive integer", False)
+
+        resolved_account = _resolve_optional_account(account)
+        exec_filter = ExecutionFilter(
+            acctCode=resolved_account or "",
+            symbol=symbol or "",
+            secType=secType or "",
+            exchange=exchange or "",
+            side=side or "",
+            time="",
+        )
+        notes: list[str] = []
+        transactions: list[TransactionModel] = []
+        skipped_missing_time = 0
+        for fill in client.get_executions(exec_filter):
+            transaction = _transaction_model(fill)
+            if not transaction.time:
+                if start_dt or end_dt:
+                    skipped_missing_time += 1
+                    continue
+                transactions.append(transaction)
+                continue
+            try:
+                execution_dt = _parse_time_filter(transaction.time)
+            except ValueError:
+                notes.append(f"unparseable transaction time skipped: {transaction.time}")
+                continue
+            if start_dt and execution_dt and execution_dt < start_dt:
+                continue
+            if end_dt and execution_dt and execution_dt > end_dt:
+                continue
+            transactions.append(transaction)
+
+        transactions.sort(key=lambda item: item.time or "", reverse=True)
+        if len(transactions) > normalized_limit:
+            notes.append(f"results truncated to limit={normalized_limit}")
+            transactions = transactions[:normalized_limit]
+        if skipped_missing_time:
+            notes.append(
+                f"skipped {skipped_missing_time} transaction(s) without timestamps for date filtering"
+            )
+        if not transactions:
+            notes.append("no transactions returned")
+        response = TransactionsResponse(transactions=transactions, notes=notes)
+        return response.model_dump()
+
+    return _run_with_client(action)
+
+
+@mcp.tool(
+    title="Get Transactions",
+    description="Return past transaction history from IBKR executions, enriched with commissions and net cash flow when available.",
+    output_schema=_combined_output_schema(TransactionsResponse),
+)
+async def ibkr_get_transactions(
+    account: OptionalAccountId = None,
+    symbol: Symbol = None,
+    secType: OptionalSecType = None,
+    exchange: ExecutionExchange = None,
+    side: ExecutionSide = None,
+    fromTime: FromTime = None,
+    toTime: ToTime = None,
+    limit: ResultLimit = 100,
+) -> dict:
+    return await anyio.to_thread.run_sync(
+        _ibkr_get_transactions_sync,
+        account,
+        symbol,
+        secType,
+        exchange,
+        side,
+        fromTime,
+        toTime,
+        limit,
     )
 
 
@@ -1638,6 +1852,279 @@ async def ibkr_get_scanner_params(format: ResponseFormat = "json") -> dict:
     return await anyio.to_thread.run_sync(
         _ibkr_get_scanner_params_sync,
         format,
+    )
+
+
+def _ibkr_get_flex_statement_sync(
+    queryId: str | None = None,
+    format: str = "json",
+) -> dict:
+    def action(client: StatementClient) -> dict:
+        normalized_format = str(format or "json").strip().lower()
+        if normalized_format not in {"json", "xml"}:
+            return _error_response("INVALID_ARGUMENT", "format must be 'json' or 'xml'", False)
+        result = client.get_flex_statement(query_id=queryId, format=normalized_format)
+        response = FlexStatementResponse(
+            queryId=(queryId or client.query_id or ""),
+            referenceCode=result.reference_code,
+            format=normalized_format,
+            url=result.url,
+            statement=result.statement,
+            notes=result.notes,
+        )
+        return response.model_dump()
+
+    return _run_with_statement_client(action)
+
+
+@mcp.tool(
+    title="Get Flex Statement",
+    description=(
+        "Fetch an IBKR Flex Web Service statement/report for a configured query id. "
+        "This uses Flex reporting, not the live TWS socket session."
+    ),
+    output_schema=_combined_output_schema(FlexStatementResponse),
+)
+async def ibkr_get_flex_statement(
+    queryId: QueryId = None,
+    format: ResponseFormat = "json",
+) -> dict:
+    return await anyio.to_thread.run_sync(
+        _ibkr_get_flex_statement_sync,
+        queryId,
+        format,
+    )
+
+
+def _cash_activity_item(entry: CashActivityEntry) -> CashActivityItem:
+    return CashActivityItem(
+        date=entry.date,
+        type=entry.type,
+        description=entry.description,
+        amount=entry.amount,
+        currency=entry.currency,
+        symbol=entry.symbol,
+        accountId=entry.account_id,
+        sourceTopic=entry.source_topic,
+    )
+
+
+def _ibkr_get_cash_activity_sync(
+    queryId: str | None = None,
+) -> dict:
+    def action(client: StatementClient) -> dict:
+        items, resolved_query_id, notes = client.get_cash_activity(queryId)
+        response = CashActivityResponse(
+            queryId=resolved_query_id,
+            items=[_cash_activity_item(item) for item in items],
+            notes=notes,
+        )
+        return response.model_dump()
+
+    return _run_with_statement_client(action)
+
+
+@mcp.tool(
+    title="Get Cash Activity",
+    description=(
+        "Extract normalized cash activity from an IBKR Flex statement, "
+        "including dividends and other cash movements when present."
+    ),
+    output_schema=_combined_output_schema(CashActivityResponse),
+)
+async def ibkr_get_cash_activity(
+    queryId: QueryId = None,
+) -> dict:
+    return await anyio.to_thread.run_sync(
+        _ibkr_get_cash_activity_sync,
+        queryId,
+    )
+
+
+def _statement_summary_response(summary: StatementSummary) -> StatementSummaryResponse:
+    return StatementSummaryResponse(
+        queryId=summary.query_id,
+        period=summary.period,
+        currency=summary.currency,
+        startingNav=summary.starting_nav,
+        endingNav=summary.ending_nav,
+        netDeposits=summary.net_deposits,
+        withdrawals=summary.withdrawals,
+        dividends=summary.dividends,
+        withholdingTax=summary.withholding_tax,
+        interest=summary.interest,
+        fees=summary.fees,
+        tradeCount=summary.trade_count,
+        notes=summary.notes,
+    )
+
+
+def _ibkr_get_statement_summary_sync(
+    queryId: str | None = None,
+) -> dict:
+    def action(client: StatementClient) -> dict:
+        summary = client.get_statement_summary(queryId)
+        return _statement_summary_response(summary).model_dump()
+
+    return _run_with_statement_client(action)
+
+
+@mcp.tool(
+    title="Get Statement Summary",
+    description=(
+        "Return a compact summary of an IBKR Flex statement, including available NAV, "
+        "cash movements, dividends, fees, and trade count."
+    ),
+    output_schema=_combined_output_schema(StatementSummaryResponse),
+)
+async def ibkr_get_statement_summary(
+    queryId: QueryId = None,
+) -> dict:
+    return await anyio.to_thread.run_sync(
+        _ibkr_get_statement_summary_sync,
+        queryId,
+    )
+
+
+def _dividend_item(entry: DividendEntry) -> DividendItem:
+    return DividendItem(
+        date=entry.date,
+        description=entry.description,
+        symbol=entry.symbol,
+        amount=entry.amount,
+        withholdingTax=entry.withholding_tax,
+        currency=entry.currency,
+        accountId=entry.account_id,
+        sourceTopic=entry.source_topic,
+    )
+
+
+def _ibkr_get_dividends_sync(
+    queryId: str | None = None,
+) -> dict:
+    def action(client: StatementClient) -> dict:
+        items, resolved_query_id, notes = client.get_dividends(queryId)
+        total_dividends = sum(
+            item.amount for item in items if item.amount is not None
+        ) if items else None
+        total_withholding_tax = sum(
+            item.withholding_tax for item in items if item.withholding_tax is not None
+        ) if items else None
+        response = DividendsResponse(
+            queryId=resolved_query_id,
+            items=[_dividend_item(item) for item in items],
+            totalDividends=total_dividends,
+            totalWithholdingTax=total_withholding_tax,
+            notes=notes,
+        )
+        return response.model_dump()
+
+    return _run_with_statement_client(action)
+
+
+@mcp.tool(
+    title="Get Dividends",
+    description=(
+        "Extract dividend activity from an IBKR Flex statement, including withholding tax "
+        "when present."
+    ),
+    output_schema=_combined_output_schema(DividendsResponse),
+)
+async def ibkr_get_dividends(
+    queryId: QueryId = None,
+) -> dict:
+    return await anyio.to_thread.run_sync(
+        _ibkr_get_dividends_sync,
+        queryId,
+    )
+
+
+def _trade_confirmation_item(entry: TradeConfirmationEntry) -> TradeConfirmationItem:
+    return TradeConfirmationItem(
+        dateTime=entry.date_time,
+        symbol=entry.symbol,
+        description=entry.description,
+        side=entry.side,
+        quantity=entry.quantity,
+        price=entry.price,
+        proceeds=entry.proceeds,
+        commission=entry.commission,
+        currency=entry.currency,
+        accountId=entry.account_id,
+        tradeId=entry.trade_id,
+        orderId=entry.order_id,
+        sourceTopic=entry.source_topic,
+    )
+
+
+def _ibkr_get_trade_confirmations_sync(
+    queryId: str | None = None,
+) -> dict:
+    def action(client: StatementClient) -> dict:
+        items, resolved_query_id, notes = client.get_trade_confirmations(queryId)
+        response = TradeConfirmationsResponse(
+            queryId=resolved_query_id,
+            items=[_trade_confirmation_item(item) for item in items],
+            notes=notes,
+        )
+        return response.model_dump()
+
+    return _run_with_statement_client(action)
+
+
+@mcp.tool(
+    title="Get Trade Confirmations",
+    description=(
+        "Extract historical trade confirmations from an IBKR Flex statement, using "
+        "TradeConfirm rows when available."
+    ),
+    output_schema=_combined_output_schema(TradeConfirmationsResponse),
+)
+async def ibkr_get_trade_confirmations(
+    queryId: QueryId = None,
+) -> dict:
+    return await anyio.to_thread.run_sync(
+        _ibkr_get_trade_confirmations_sync,
+        queryId,
+    )
+
+
+def _statement_topic_item(entry: StatementTopicEntry) -> StatementTopicItem:
+    return StatementTopicItem(
+        topic=entry.topic,
+        count=entry.count,
+    )
+
+
+def _ibkr_get_statement_topics_sync(
+    queryId: str | None = None,
+) -> dict:
+    def action(client: StatementClient) -> dict:
+        items, resolved_query_id, notes = client.get_statement_topics(queryId)
+        response = StatementTopicsResponse(
+            queryId=resolved_query_id,
+            topics=[_statement_topic_item(item) for item in items],
+            notes=notes,
+        )
+        return response.model_dump()
+
+    return _run_with_statement_client(action)
+
+
+@mcp.tool(
+    title="Get Statement Topics",
+    description=(
+        "Inspect the extractable topic names present in an IBKR Flex statement, with row counts "
+        "to help validate query layouts."
+    ),
+    output_schema=_combined_output_schema(StatementTopicsResponse),
+)
+async def ibkr_get_statement_topics(
+    queryId: QueryId = None,
+) -> dict:
+    return await anyio.to_thread.run_sync(
+        _ibkr_get_statement_topics_sync,
+        queryId,
     )
 
 

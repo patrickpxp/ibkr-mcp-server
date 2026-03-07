@@ -31,6 +31,9 @@ Focus: close practical lifecycle gaps after initial trading tool rollout.
 - `ibkr_get_recent_trades`
   - Inputs: optional filters (`account`, `symbol`, `limit`)
   - Output: recent in-session trades
+- `ibkr_get_transactions`
+  - Status: implemented as execution-backed transaction history with date filters, commissions, and net cash flow
+  - Constraint: not a substitute for official account statements
 
 2. Improve cancel reliability for stateless usage
 - Track submitted orders in a lightweight server-side cache keyed by `orderId`/`permId`.
@@ -50,6 +53,8 @@ Focus: close practical lifecycle gaps after initial trading tool rollout.
 5. Expand tests and docs
 - Add integration-like tests for order lifecycle paths (place -> lookup -> cancel).
 - Document expected behavior for staged (`transmit=false`) versus transmitted orders.
+- Document the separation between TWS transaction history and statement/reporting integrations.
+- Extend the initial Flex statement support into higher-level reporting tools such as cash activity and dividends.
 
 ### Done criteria for Batch 4
 - Reliable status retrieval for order ids returned by placement tools.

@@ -19,3 +19,5 @@ tests/test_offline_mode.py
 tests/test_schema.py
 tests/test_tools_batch1.py
 tests/test_tools_batch2.py
+tests/test_tools_batch3.py
+tests/test_tools_batch4.py

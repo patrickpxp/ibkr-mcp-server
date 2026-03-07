@@ -2,11 +2,13 @@
 
 ## Run Tests
 
+Tests in this repo are expected to run from a local repo-level virtual environment.
+In this environment, `python` may be unavailable even when `python3` exists, so prefer `python3` for venv creation.
+
 If the virtual environment does not exist yet, create it first:
 
 ```
-python -m venv .venv
-.venv/bin/python -m pip install -U pip
+python3 -m venv .venv
 .venv/bin/python -m pip install -e .[test]
 ```
 
@@ -22,6 +24,18 @@ Alternatively, install the package in editable mode and run tests normally:
 .venv/bin/python -m pip install -e .[test]
 .venv/bin/python -m pytest -q
 ```
+
+## WSL to TWS Networking
+
+If the runtime is WSL and TWS is running on Windows, `127.0.0.1` from WSL may not reach the TWS API even when localhost works from Windows itself.
+
+To determine the Windows-side host IP to use for `IBKR_HOST`, run:
+
+```
+ip route show | grep default | awk '{print $3}'
+```
+
+In this setup, use that IP for TWS access from WSL and consider increasing `IBKR_TIMEOUT_SECONDS` if the IB API handshake is slow.
 
 ## Debug MCP Errors
 

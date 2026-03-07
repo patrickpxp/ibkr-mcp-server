@@ -4,3 +4,5 @@ mcp-ibkr/src/mcp_ibkr.egg-info/
 __pycache__/
 *.pyc
 .venv/
+.env.papertrading
+.env.flexquery
