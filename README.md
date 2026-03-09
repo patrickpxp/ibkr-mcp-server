@@ -31,6 +31,8 @@ IBKR_CLIENT_ID=123
 IBKR_ACCOUNT=
 IBKR_TIMEOUT_SECONDS=10
 IBKR_ENABLE_TRADING=false # keep false by default; set true only for explicit trading actions
+IBKR_FLEX_TOKEN=
+IBKR_FLEX_QUERY_ID=
 MCP_BIND_HOST=0.0.0.0 # bind all interfaces so Docker port mapping is reachable; 127.0.0.1 would be container-only
 MCP_PORT=8000
 MCP_JSON_RESPONSE=true
@@ -40,6 +42,22 @@ TZ=Europe/Madrid
 
 Set `MCP_JSON_RESPONSE=false` or `MCP_STATELESS_HTTP=false` to enable streamable
 HTTP/session behavior when needed.
+
+If you want to validate the Flex reporting tools locally, keep the Flex credentials in a separate env file such as `.env.flexquery`:
+```
+IBKR_FLEX_TOKEN=
+IBKR_FLEX_QUERY_ID=
+```
+
+## WSL Note
+If the runtime is WSL and TWS is running on Windows, `127.0.0.1` from WSL may not reach the Windows TWS API even when localhost works from Windows itself.
+
+Use the Windows host IP from WSL for `IBKR_HOST`:
+```
+ip route show | grep default | awk '{print $3}'
+```
+
+In this setup, using a higher `IBKR_TIMEOUT_SECONDS` such as `30` may also be necessary for the IB API handshake.
 
 ## Run
 ```
@@ -70,6 +88,7 @@ curl -s -X POST http://localhost:${MCP_PORT:-8000}/mcp \
 - `ibkr_get_account_values`: Account values snapshot (uses a short refresh; may fall back to cached values).
 - `ibkr_get_open_orders`: Open orders with contract details and status.
 - `ibkr_get_executions`: Executions/fills with basic execution details.
+- `ibkr_get_transactions`: Transaction history derived from executions, with commissions and net cash flow when available.
 - `ibkr_search_symbols`: Symbol lookup via matching symbols.
 - `ibkr_get_contract_details`: Contract details for a given contract input.
 - `ibkr_get_market_data_snapshot`: One-shot market data snapshot for contracts (includes option greeks such as delta when available; supports optional `market_data_type` override; IBIS requests are normalized to SMART + primaryExchange=IBIS).
@@ -84,6 +103,12 @@ curl -s -X POST http://localhost:${MCP_PORT:-8000}/mcp \
 - `ibkr_get_news_article`: News article body for a provider/article id.
 - `ibkr_get_fundamental_data`: Fundamental data report (JSON by default, XML optional).
 - `ibkr_get_scanner_params`: Scanner parameters (JSON by default, XML optional).
+- `ibkr_get_flex_statement`: Fetch a Flex statement/report for a configured Flex query id.
+- `ibkr_get_cash_activity`: Extract normalized cash activity from a Flex statement.
+- `ibkr_get_statement_summary`: Return a compact summary of a Flex statement.
+- `ibkr_get_dividends`: Extract dividends and withholding tax from a Flex statement.
+- `ibkr_get_trade_confirmations`: Extract historical trade confirmations from a Flex statement.
+- `ibkr_get_statement_topics`: Inspect the topic names and row counts present in a Flex statement.
 - `ibkr_run_scanner`: Run a market scanner subscription and return ranked results.
 - `ibkr_preview_order`: What-if margin/commission preview for an order.
 - `ibkr_place_order`: Place one order (defaults: `dry_run=true`, `transmit=false`).
@@ -99,6 +124,21 @@ Batch 3 safety rules:
 - Live mutating tools are disabled unless `IBKR_ENABLE_TRADING=true`.
 - Mutating tools require `confirm=true`.
 - Order placement flows default to `dry_run=true` and `transmit=false`.
+
+Statement retrieval note:
+- `ibkr_get_transactions` is TWS/API-backed execution history, not an official IBKR account statement archive.
+- `ibkr_get_flex_statement` uses `ib_async.flexreport.FlexReport`, which wraps the IBKR Flex Web Service separately from the live TWS session.
+- Official statements, cash activity, dividends, and tax-style reports should continue to be treated as reporting features, not inferred from the live TWS socket state.
+
+## Flex Query Setup
+For the reporting tools, create an Activity Flex Query in IBKR that includes at least:
+- `Trades`
+- `Cash Transactions`
+- `Change in Dividend Accruals`
+- `Equity Summary by Report Date in Base`
+- `Statement of Funds`
+
+`ibkr_get_statement_topics` is useful for validating which topics your Flex query actually returns.
 ## Schemas and Errors
 `tools/list` includes `title`, `description`, `inputSchema`, and `outputSchema` for every tool. Input schemas include per-parameter descriptions, and output schemas describe the structured response payloads.
 
@@ -121,8 +161,15 @@ cp -R .codex/skills/ibkr-portfolio ~/.codex/skills/
 ```
 
 ## Tests
+Create the local virtual environment first if needed:
 ```
-python -m pytest -q
+python3 -m venv .venv
+.venv/bin/python -m pip install -e .[test]
+```
+
+Run the suite with the repo virtual environment:
+```
+.venv/bin/python -m pytest -q
 ```
 
 ## Future: Auth

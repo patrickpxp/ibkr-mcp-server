@@ -165,6 +165,32 @@ class ExecutionsResponse(BaseModel):
     notes: list[str]
 
 
+class TransactionModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    execId: Optional[str] = None
+    orderId: Optional[int] = None
+    permId: Optional[int] = None
+    account: Optional[str] = None
+    time: Optional[str] = None
+    side: Optional[str] = None
+    quantity: Optional[float] = None
+    price: Optional[float] = None
+    grossAmount: Optional[float] = None
+    commission: Optional[float] = None
+    commissionCurrency: Optional[str] = None
+    realizedPnl: Optional[float] = None
+    netAmount: Optional[float] = None
+    contract: ContractModel
+
+
+class TransactionsResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    transactions: list[TransactionModel]
+    notes: list[str]
+
+
 class SymbolMatchModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -518,4 +544,118 @@ class ExerciseOptionsResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     status: str
+    notes: list[str]
+
+
+class FlexStatementResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    queryId: str
+    referenceCode: str
+    format: str
+    url: str
+    statement: Optional[Any] = None
+    notes: list[str]
+
+
+class CashActivityItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    date: Optional[str] = None
+    type: str
+    description: Optional[str] = None
+    amount: Optional[float] = None
+    currency: Optional[str] = None
+    symbol: Optional[str] = None
+    accountId: Optional[str] = None
+    sourceTopic: str
+
+
+class CashActivityResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    queryId: str
+    items: list[CashActivityItem]
+    notes: list[str]
+
+
+class StatementSummaryResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    queryId: str
+    period: Optional[str] = None
+    currency: Optional[str] = None
+    startingNav: Optional[float] = None
+    endingNav: Optional[float] = None
+    netDeposits: Optional[float] = None
+    withdrawals: Optional[float] = None
+    dividends: Optional[float] = None
+    withholdingTax: Optional[float] = None
+    interest: Optional[float] = None
+    fees: Optional[float] = None
+    tradeCount: Optional[int] = None
+    notes: list[str]
+
+
+class DividendItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    date: Optional[str] = None
+    description: Optional[str] = None
+    symbol: Optional[str] = None
+    amount: Optional[float] = None
+    withholdingTax: Optional[float] = None
+    currency: Optional[str] = None
+    accountId: Optional[str] = None
+    sourceTopic: str
+
+
+class DividendsResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    queryId: str
+    items: list[DividendItem]
+    totalDividends: Optional[float] = None
+    totalWithholdingTax: Optional[float] = None
+    notes: list[str]
+
+
+class TradeConfirmationItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    dateTime: Optional[str] = None
+    symbol: Optional[str] = None
+    description: Optional[str] = None
+    side: Optional[str] = None
+    quantity: Optional[float] = None
+    price: Optional[float] = None
+    proceeds: Optional[float] = None
+    commission: Optional[float] = None
+    currency: Optional[str] = None
+    accountId: Optional[str] = None
+    tradeId: Optional[str] = None
+    orderId: Optional[str] = None
+    sourceTopic: str
+
+
+class TradeConfirmationsResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    queryId: str
+    items: list[TradeConfirmationItem]
+    notes: list[str]
+
+
+class StatementTopicItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    topic: str
+    count: int
+
+
+class StatementTopicsResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    queryId: str
+    topics: list[StatementTopicItem]
     notes: list[str]
