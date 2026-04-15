@@ -27,7 +27,7 @@ Create `.env` (ignored by git) as needed:
 ```
 IBKR_HOST=host.docker.internal # from the container, this reaches the host TWS/IB Gateway; 127.0.0.1 would point to the container itself
 IBKR_PORT=7496 # live trading port (paper is 7497)
-IBKR_CLIENT_ID=123
+IBKR_CLIENT_ID=100 # choose a unique client ID for this server instance
 IBKR_ACCOUNT=
 IBKR_TIMEOUT_SECONDS=10
 IBKR_ENABLE_TRADING=false # keep false by default; set true only for explicit trading actions
@@ -42,6 +42,15 @@ TZ=Europe/Madrid
 
 Set `MCP_JSON_RESPONSE=false` or `MCP_STATELESS_HTTP=false` to enable streamable
 HTTP/session behavior when needed.
+
+If you run multiple IBKR API clients at the same time, each one must use a different
+`IBKR_CLIENT_ID`. For example, a paper deployment could use:
+```
+IBKR_PORT=7497
+IBKR_CLIENT_ID=300
+```
+
+See [CLIENT_ID_POLICY.md](CLIENT_ID_POLICY.md) for a deterministic client ID allocation plan.
 
 If you want to validate the Flex reporting tools locally, keep the Flex credentials in a separate env file such as `.env.flexquery`:
 ```

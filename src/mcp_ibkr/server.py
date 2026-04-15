@@ -1,5 +1,6 @@
 import logging
 import os
+import threading
 from dataclasses import fields as dataclass_fields, is_dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -97,6 +98,32 @@ from .statement_client import (
 )
 
 logger = logging.getLogger(__name__)
+_CLIENT_SESSION_LOCK = threading.Lock()
+
+
+def _ibkr_connection_identity() -> dict[str, object]:
+    ibkr_port = int(os.getenv("IBKR_PORT", "7497"))
+    trading_mode = {7496: "live", 7497: "paper"}.get(ibkr_port, "custom")
+    return {
+        "ibkr_host": os.getenv("IBKR_HOST", "host.docker.internal"),
+        "ibkr_port": ibkr_port,
+        "ibkr_client_id": int(os.getenv("IBKR_CLIENT_ID", "100")),
+        "ibkr_account_configured": bool(os.getenv("IBKR_ACCOUNT", "").strip()),
+        "ibkr_trading_enabled": os.getenv("IBKR_ENABLE_TRADING", "false").lower()
+        in {"1", "true", "yes", "on"},
+        "ibkr_trading_mode": trading_mode,
+    }
+
+
+def _startup_log_context() -> dict[str, object]:
+    context = _ibkr_connection_identity()
+    context.update(
+        {
+            "mcp_bind_host": os.getenv("MCP_BIND_HOST", "0.0.0.0"),
+            "mcp_port": int(os.getenv("MCP_PORT", "8000")),
+        }
+    )
+    return context
 
 def _merge_schema_definitions(*schemas: dict[str, Any]) -> dict[str, Any]:
     definitions: dict[str, Any] = {}
@@ -826,18 +853,19 @@ def _order_state_model(order_state: object | None) -> OrderStateModel | None:
 
 
 def _run_with_client(action) -> dict:
-    client = create_client()
-    try:
-        client.connect()
-        return action(client)
-    except IBKRConnectionError as exc:
-        logger.warning("tws connection failed", exc_info=True)
-        return _error_response("TWS_CONNECTION_FAILED", str(exc), True)
-    except Exception as exc:
-        logger.exception("ibkr tool failed")
-        return _error_response("INTERNAL_ERROR", str(exc), False)
-    finally:
-        client.disconnect()
+    with _CLIENT_SESSION_LOCK:
+        client = create_client()
+        try:
+            client.connect()
+            return action(client)
+        except IBKRConnectionError as exc:
+            logger.warning("tws connection failed", exc_info=True)
+            return _error_response("TWS_CONNECTION_FAILED", str(exc), True)
+        except Exception as exc:
+            logger.exception("ibkr tool failed")
+            return _error_response("INTERNAL_ERROR", str(exc), False)
+        finally:
+            client.disconnect()
 
 
 def create_statement_client() -> StatementClient:
@@ -2742,14 +2770,13 @@ async def ibkr_debug_market_data_snapshot(
 
 def main() -> None:
     configure_logging()
-    host = os.getenv("MCP_BIND_HOST", "0.0.0.0")
-    port = int(os.getenv("MCP_PORT", "8000"))
+    startup_context = _startup_log_context()
 
-    logger.info("starting mcp server", extra={"host": host, "port": port})
+    logger.info("starting mcp server", extra=startup_context)
     uvicorn.run(
         "mcp_ibkr.server:app",
-        host=host,
-        port=port,
+        host=str(startup_context["mcp_bind_host"]),
+        port=int(startup_context["mcp_port"]),
         log_config=None,
         access_log=False,
     )

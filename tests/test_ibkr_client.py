@@ -1,8 +1,9 @@
 import logging
+import threading
 
 import pytest
 
-from mcp_ibkr.ibkr_client import IBKRClient, IBKRConnectionError
+from mcp_ibkr.ibkr_client import IBKRClient, IBKRConnectionError, _thread_local_get_loop
 from mcp_ibkr.models import PositionSnapshot
 
 
@@ -45,7 +46,6 @@ class _StubIB:
 def test_connect_raises_when_ib_connect_returns_false(monkeypatch):
     client = IBKRClient(host="127.0.0.1", port=7497, client_id=1, timeout_seconds=1)
 
-    monkeypatch.setattr("mcp_ibkr.ibkr_client.util.startLoop", lambda: None)
     monkeypatch.setattr(client.ib, "connect", lambda *args, **kwargs: False)
 
     with pytest.raises(IBKRConnectionError):
@@ -58,11 +58,26 @@ def test_connect_raises_when_ib_connect_raises(monkeypatch):
     def boom(*args, **kwargs):
         raise RuntimeError("nope")
 
-    monkeypatch.setattr("mcp_ibkr.ibkr_client.util.startLoop", lambda: None)
     monkeypatch.setattr(client.ib, "connect", boom)
 
     with pytest.raises(IBKRConnectionError):
         client.connect()
+
+
+def test_thread_local_get_loop_returns_distinct_loops_per_thread():
+    loops = []
+
+    def collect_loop():
+        loops.append(_thread_local_get_loop())
+
+    threads = [threading.Thread(target=collect_loop) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert len(loops) == 2
+    assert loops[0] is not loops[1]
 
 
 def test_disconnect_swallows_errors(monkeypatch, caplog):
