@@ -1,5 +1,7 @@
 import anyio
 import httpx
+import threading
+import time
 
 import mcp.types as mcp_types
 from mcp_ibkr import server
@@ -267,3 +269,41 @@ def test_trading_confirmation_error_sets_is_error(monkeypatch):
     result = payload["result"]
     assert result["isError"] is True
     assert result["structuredContent"]["error"]["type"] == "CONFIRM_REQUIRED"
+
+
+def test_run_with_client_serializes_concurrent_calls(monkeypatch):
+    state = {
+        "active": 0,
+        "max_active": 0,
+        "connects": 0,
+    }
+    state_lock = threading.Lock()
+
+    class BlockingClient:
+        def connect(self) -> None:
+            with state_lock:
+                state["active"] += 1
+                state["connects"] += 1
+                state["max_active"] = max(state["max_active"], state["active"])
+            time.sleep(0.1)
+
+        def disconnect(self) -> None:
+            with state_lock:
+                state["active"] -= 1
+
+    monkeypatch.setattr(server, "create_client", BlockingClient)
+
+    results = []
+
+    def run_call():
+        results.append(server._run_with_client(lambda client: {"ok": True}))
+
+    threads = [threading.Thread(target=run_call) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert results == [{"ok": True}, {"ok": True}]
+    assert state["connects"] == 2
+    assert state["max_active"] == 1

@@ -6,11 +6,12 @@ services:
     environment:
       IBKR_HOST: ${IBKR_HOST:-host.docker.internal}
       IBKR_PORT: ${IBKR_PORT:-7497}
-      IBKR_CLIENT_ID: ${IBKR_CLIENT_ID:-123}
+      IBKR_CLIENT_ID: ${IBKR_CLIENT_ID:-100}
       IBKR_ACCOUNT: ${IBKR_ACCOUNT:-}
       IBKR_TIMEOUT_SECONDS: ${IBKR_TIMEOUT_SECONDS:-10}
       IBKR_FLEX_TOKEN: ${IBKR_FLEX_TOKEN:-}
       IBKR_FLEX_QUERY_ID: ${IBKR_FLEX_QUERY_ID:-}
+      IBKR_ENABLE_TRADING: ${IBKR_ENABLE_TRADING:-false}
       TZ: ${TZ:-Europe/Madrid}
       MCP_BIND_HOST: ${MCP_BIND_HOST:-0.0.0.0}
       MCP_PORT: ${MCP_PORT:-8000}

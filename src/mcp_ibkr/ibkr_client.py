@@ -1,4 +1,5 @@
 import copy
+import asyncio
 import logging
 import math
 import os
@@ -7,6 +8,9 @@ from dataclasses import fields as dataclass_fields
 from typing import Iterable, Optional
 
 from ib_async import IB, util
+import ib_async.client as ib_client
+import ib_async.connection as ib_connection
+import ib_async.wrapper as ib_wrapper
 from ib_async.contract import Contract, ContractDescription, ContractDetails
 from ib_async.objects import AccountValue, ExecutionFilter, Fill, ScannerSubscription
 from ib_async.order import LimitOrder, Order, OrderState, StopOrder, Trade
@@ -14,6 +18,42 @@ from ib_async.order import LimitOrder, Order, OrderState, StopOrder, Trade
 from .models import PnlResult, PositionModel, PositionSnapshot, TotalsModel
 
 logger = logging.getLogger(__name__)
+
+_THREAD_LOCAL_LOOP = threading.local()
+
+
+def _thread_local_get_loop():
+    """
+    ib_async caches util.getLoop() process-wide, which breaks when requests are
+    served via different worker threads. Use one event loop per thread instead.
+    """
+    loop = getattr(_THREAD_LOCAL_LOOP, "loop", None)
+    if loop is not None and loop.is_closed():
+        loop = None
+
+    try:
+        running_loop = asyncio.get_running_loop()
+    except RuntimeError:
+        running_loop = None
+
+    if running_loop is not None:
+        _THREAD_LOCAL_LOOP.loop = running_loop
+        return running_loop
+
+    if loop is None:
+        loop = asyncio.new_event_loop()
+        _THREAD_LOCAL_LOOP.loop = loop
+
+    asyncio.set_event_loop(loop)
+    return loop
+
+
+# ib_async caches its default loop globally, and some modules bind getLoop
+# directly at import time. Override all known entry points for this process.
+util.getLoop = _thread_local_get_loop
+ib_connection.getLoop = _thread_local_get_loop
+ib_client.getLoop = _thread_local_get_loop
+ib_wrapper.getLoop = _thread_local_get_loop
 
 
 def _normalize_market_data_contract(contract: Contract) -> Contract:
@@ -25,10 +65,6 @@ def _normalize_market_data_contract(contract: Contract) -> Contract:
             contract_copy.primaryExchange = "IBIS"
         return contract_copy
     return contract
-
-_START_LOOP_LOCK = threading.Lock()
-_START_LOOP_INITIALIZED = False
-
 
 class IBKRConnectionError(Exception):
     pass
@@ -145,18 +181,13 @@ class IBKRClient:
     def from_env(cls) -> "IBKRClient":
         host = os.getenv("IBKR_HOST", "host.docker.internal")
         port = int(os.getenv("IBKR_PORT", "7497"))
-        client_id = int(os.getenv("IBKR_CLIENT_ID", "123"))
+        client_id = int(os.getenv("IBKR_CLIENT_ID", "100"))
         timeout_seconds = int(os.getenv("IBKR_TIMEOUT_SECONDS", "10"))
         return cls(host, port, client_id, timeout_seconds)
 
     def connect(self) -> None:
         try:
-            global _START_LOOP_INITIALIZED
-            if not _START_LOOP_INITIALIZED:
-                with _START_LOOP_LOCK:
-                    if not _START_LOOP_INITIALIZED:
-                        util.startLoop()
-                        _START_LOOP_INITIALIZED = True
+            _thread_local_get_loop()
             connected = self.ib.connect(
                 self.host,
                 self.port,
