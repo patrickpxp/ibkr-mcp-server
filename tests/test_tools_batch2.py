@@ -126,6 +126,12 @@ class StubClient:
     def get_fundamental_data(self, contract, report_type):
         return "<Fundamentals></Fundamentals>", []
 
+    def get_wsh_metadata(self):
+        return '{"event_types":[{"code":"wshe_ed","name":"Earnings Dates"}],"filters":[{"code":"watchlist"}]}'
+
+    def get_wsh_event_data(self, request):
+        return '{"data":[{"event_type":"wshe_ed","title":"Apple earnings","event_date":"2024-05-02","event_time":"AMC"}]}'
+
     def get_scanner_params(self):
         return "<scanner></scanner>"
 
@@ -287,6 +293,33 @@ def test_fundamental_data_tool(monkeypatch):
 
     assert response["report"]
     assert "Fundamentals" in response["report"]
+
+
+def test_wsh_metadata_tool(monkeypatch):
+    _use_stub(monkeypatch)
+
+    response = _run_tool_sync(server.ibkr_get_wsh_metadata.fn)
+
+    assert response["metadata"]
+    assert response["metadata"]["event_types"][0]["code"] == "wshe_ed"
+
+
+
+def test_wsh_earnings_calendar_tool(monkeypatch):
+    _use_stub(monkeypatch)
+
+    response = _run_tool_sync(
+        server.ibkr_get_wsh_earnings_calendar.fn,
+        {"symbol": "AAPL", "secType": "STK", "exchange": "SMART", "currency": "USD"},
+        "20240501",
+        "20240531",
+        5,
+    )
+
+    assert response["conId"] == 265598
+    assert response["eventTypeCode"] == "wshe_ed"
+    assert response["events"]["data"][0]["event_date"] == "2024-05-02"
+
 
 
 def test_scanner_params_tool(monkeypatch):

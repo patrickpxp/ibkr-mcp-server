@@ -97,6 +97,8 @@ def test_tools_list_accepts_json_only():
         "ibkr_get_historical_news",
         "ibkr_get_news_article",
         "ibkr_get_fundamental_data",
+        "ibkr_get_wsh_metadata",
+        "ibkr_get_wsh_earnings_calendar",
         "ibkr_get_scanner_params",
         "ibkr_get_flex_statement",
         "ibkr_get_cash_activity",

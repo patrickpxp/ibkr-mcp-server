@@ -12,7 +12,7 @@ import ib_async.client as ib_client
 import ib_async.connection as ib_connection
 import ib_async.wrapper as ib_wrapper
 from ib_async.contract import Contract, ContractDescription, ContractDetails
-from ib_async.objects import AccountValue, ExecutionFilter, Fill, ScannerSubscription
+from ib_async.objects import AccountValue, ExecutionFilter, Fill, ScannerSubscription, WshEventData
 from ib_async.order import LimitOrder, Order, OrderState, StopOrder, Trade
 
 from .models import PnlResult, PositionModel, PositionSnapshot, TotalsModel
@@ -595,6 +595,18 @@ class IBKRClient:
             timeout=self.timeout_seconds,
         )
         return data, notes
+
+    def get_wsh_metadata(self) -> str:
+        return util.run(
+            self.ib.getWshMetaDataAsync(),
+            timeout=self.timeout_seconds,
+        )
+
+    def get_wsh_event_data(self, request: WshEventData) -> str:
+        return util.run(
+            self.ib.getWshEventDataAsync(request),
+            timeout=self.timeout_seconds,
+        )
 
     def get_scanner_params(self) -> str:
         return util.run(
