@@ -1,6 +1,7 @@
 import datetime
 
 from mcp_ibkr import server
+from mcp_ibkr.ibkr_client import IBKRMarketDataTimeoutError
 
 
 class StubAccountValue:
@@ -185,6 +186,11 @@ class StubMarketDataTypeClient(StubClient):
         self.ib = _StubMarketDataTypeIB()
 
 
+class StubMarketDataTimeoutClient(StubClient):
+    def get_market_data_snapshot(self, contracts, regulatory_snapshot=False):
+        raise IBKRMarketDataTimeoutError("market data snapshot timed out")
+
+
 def _use_stub(monkeypatch):
     monkeypatch.setattr(server, "create_client", lambda: StubClient())
 
@@ -309,3 +315,16 @@ def test_market_data_snapshot_sets_market_data_type(monkeypatch):
 
     assert client.ib.last_market_data_type == 2
     assert any("market data type set to 2" in note for note in response["notes"])
+
+
+def test_market_data_snapshot_timeout_returns_typed_error(monkeypatch):
+    monkeypatch.setattr(server, "create_client", lambda: StubMarketDataTimeoutClient())
+
+    response = _run_tool_sync(
+        server.ibkr_get_market_data_snapshot.fn,
+        [{"symbol": "AAPL", "secType": "STK", "exchange": "SMART", "currency": "USD"}],
+        False,
+    )
+
+    assert response["error"]["type"] == "MARKET_DATA_TIMEOUT"
+    assert response["error"]["retryable"] is True

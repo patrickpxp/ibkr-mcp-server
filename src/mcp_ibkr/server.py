@@ -20,7 +20,7 @@ from starlette.responses import JSONResponse
 import uvicorn
 import xmltodict
 
-from .ibkr_client import IBKRClient, IBKRConnectionError
+from .ibkr_client import IBKRClient, IBKRConnectionError, IBKRMarketDataTimeoutError
 from .logging_utils import configure_logging
 from .models import (
     AccountSummaryItem,
@@ -864,6 +864,9 @@ def _run_with_client(action) -> dict:
         except IBKRConnectionError as exc:
             logger.warning("tws connection failed", exc_info=True)
             return _error_response("TWS_CONNECTION_FAILED", str(exc), True)
+        except IBKRMarketDataTimeoutError as exc:
+            logger.warning("market data snapshot timed out", exc_info=True)
+            return _error_response("MARKET_DATA_TIMEOUT", str(exc), True)
         except Exception as exc:
             logger.exception("ibkr tool failed")
             return _error_response("INTERNAL_ERROR", str(exc), False)

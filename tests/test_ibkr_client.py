@@ -3,7 +3,12 @@ import threading
 
 import pytest
 
-from mcp_ibkr.ibkr_client import IBKRClient, IBKRConnectionError, _thread_local_get_loop
+from mcp_ibkr.ibkr_client import (
+    IBKRClient,
+    IBKRConnectionError,
+    IBKRMarketDataTimeoutError,
+    _thread_local_get_loop,
+)
 from mcp_ibkr.models import PositionSnapshot
 
 
@@ -43,6 +48,37 @@ class _StubIB:
         return ("summary", args, kwargs)
 
 
+class _StubEvent:
+    def __init__(self) -> None:
+        self._handlers = []
+
+    def __iadd__(self, handler):
+        self._handlers.append(handler)
+        return self
+
+    def __isub__(self, handler):
+        self._handlers.remove(handler)
+        return self
+
+    def emit(self, *args):
+        for handler in list(self._handlers):
+            handler(*args)
+
+
+class _StubMarketDataIB(_StubIB):
+    def __init__(self) -> None:
+        super().__init__()
+        self.errorEvent = _StubEvent()
+        self.market_data_types = []
+
+    def reqMarketDataType(self, market_data_type):
+        self.market_data_types.append(market_data_type)
+
+    def reqTickersAsync(self, *contracts, regulatorySnapshot=False):
+        market_data_type = self.market_data_types[-1] if self.market_data_types else 1
+        return ("tickers", market_data_type, contracts, regulatorySnapshot)
+
+
 def test_connect_raises_when_ib_connect_returns_false(monkeypatch):
     client = IBKRClient(host="127.0.0.1", port=7497, client_id=1, timeout_seconds=1)
 
@@ -78,6 +114,77 @@ def test_thread_local_get_loop_returns_distinct_loops_per_thread():
 
     assert len(loops) == 2
     assert loops[0] is not loops[1]
+
+
+def test_market_data_snapshot_timeout_raises_typed_error(monkeypatch):
+    client = IBKRClient(host="127.0.0.1", port=7497, client_id=1, timeout_seconds=1)
+    client.ib = _StubMarketDataIB()
+
+    class Contract:
+        conId = 123
+        symbol = "AAPL"
+        secType = "STK"
+        exchange = "SMART"
+        currency = "USD"
+
+    monkeypatch.setattr(
+        client,
+        "_qualify_contracts",
+        lambda contracts: (list(contracts), []),
+    )
+
+    def fake_run(*args, **kwargs):
+        raise TimeoutError()
+
+    monkeypatch.setattr("mcp_ibkr.ibkr_client.util.run", fake_run)
+
+    with pytest.raises(IBKRMarketDataTimeoutError) as exc_info:
+        client.get_market_data_snapshot([Contract()])
+
+    assert "market data snapshot timed out after 1 seconds" in str(exc_info.value)
+
+
+def test_market_data_snapshot_retries_delayed_after_subscription_error(monkeypatch):
+    client = IBKRClient(host="127.0.0.1", port=7497, client_id=1, timeout_seconds=1)
+    client.ib = _StubMarketDataIB()
+
+    class Contract:
+        conId = 123
+        symbol = "AJI"
+        secType = "STK"
+        exchange = "FWB2"
+        currency = "EUR"
+
+    class Ticker:
+        contract = Contract()
+        last = 12.3
+        close = None
+
+    monkeypatch.setattr(
+        client,
+        "_qualify_contracts",
+        lambda contracts: (list(contracts), []),
+    )
+
+    def fake_run(token, **kwargs):
+        if token[1] == 1:
+            client.ib.errorEvent.emit(
+                12,
+                354,
+                "Requested market data is not subscribed.",
+                Contract(),
+            )
+            raise TimeoutError()
+        return [Ticker()]
+
+    monkeypatch.setattr("mcp_ibkr.ibkr_client.util.run", fake_run)
+
+    tickers, notes = client.get_market_data_snapshot([Contract()])
+
+    assert tickers
+    assert client.ib.market_data_types == [3]
+    assert any("live market data subscription unavailable" in note for note in notes)
+    assert any("delayed market data" in note for note in notes)
 
 
 def test_disconnect_swallows_errors(monkeypatch, caplog):
