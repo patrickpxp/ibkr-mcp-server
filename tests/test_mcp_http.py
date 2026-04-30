@@ -67,6 +67,25 @@ def _post_mcp_sync(app, payload):
     return anyio.run(_post_mcp, app, payload)
 
 
+async def _get_health(app):
+    async with app.router.lifespan_context(app):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://testserver"
+        ) as client:
+            return await client.get("/health")
+
+
+def test_health_reports_ibkr_timeout_seconds(monkeypatch):
+    monkeypatch.setenv("IBKR_TIMEOUT_SECONDS", "30")
+    app = server.create_app()
+
+    response = anyio.run(_get_health, app)
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok", "ibkrTimeoutSeconds": 30}
+
+
 def test_tools_list_accepts_json_only():
     app = server.create_app()
     response = _post_mcp_sync(

@@ -214,7 +214,10 @@ def create_app() -> FastAPI:
 
     @app.get("/health")
     async def health() -> JSONResponse:
-        return JSONResponse({"status": "ok"})
+        timeout_seconds = int(os.getenv("IBKR_TIMEOUT_SECONDS", "10"))
+        return JSONResponse(
+            {"status": "ok", "ibkrTimeoutSeconds": timeout_seconds}
+        )
 
     app.mount("/", mcp_app)
     return app

@@ -80,7 +80,7 @@ curl http://localhost:${MCP_PORT:-8000}/health
 
 Expected response:
 ```json
-{"status":"ok"}
+{"status":"ok","ibkrTimeoutSeconds":10}
 ```
 
 ## MCP Tool Invocation Example
