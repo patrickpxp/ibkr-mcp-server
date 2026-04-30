@@ -80,7 +80,7 @@ curl http://localhost:${MCP_PORT:-8000}/health
 
 Expected response:
 ```json
-{"status":"ok"}
+{"status":"ok","ibkrTimeoutSeconds":10}
 ```
 
 ## MCP Tool Invocation Example
@@ -100,7 +100,7 @@ curl -s -X POST http://localhost:${MCP_PORT:-8000}/mcp \
 - `ibkr_get_transactions`: Transaction history derived from executions, with commissions and net cash flow when available.
 - `ibkr_search_symbols`: Symbol lookup via matching symbols.
 - `ibkr_get_contract_details`: Contract details for a given contract input.
-- `ibkr_get_market_data_snapshot`: One-shot market data snapshot for contracts (includes option greeks such as delta when available; supports optional `market_data_type` override; IBIS requests are normalized to SMART + primaryExchange=IBIS).
+- `ibkr_get_market_data_snapshot`: One-shot market data snapshot for contracts (includes option greeks such as delta when available; supports optional `market_data_type` override; IBIS requests are normalized to SMART + primaryExchange=IBIS). If IBKR reports live market data subscription errors, the tool retries once with delayed market data type `3` and includes guidance in `notes`; plain snapshot timeouts return retryable `MARKET_DATA_TIMEOUT`.
 - `ibkr_debug_market_data_snapshot`: Diagnostic snapshot that compares raw vs SMART+primaryExchange requests.
 - `ibkr_get_historical_bars`: Historical OHLCV bars for a contract.
 - `ibkr_get_historical_ticks`: Historical ticks (bid/ask/trades/midpoint) for a contract.

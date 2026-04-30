@@ -70,6 +70,39 @@ class IBKRConnectionError(Exception):
     pass
 
 
+class IBKRMarketDataTimeoutError(TimeoutError):
+    pass
+
+
+_MARKET_DATA_SUBSCRIPTION_ERROR_CODES = {354, 10090}
+_DELAYED_MARKET_DATA_TYPE = 3
+
+
+def _market_data_timeout_message(timeout_seconds: int) -> str:
+    return (
+        f"market data snapshot timed out after {timeout_seconds} seconds; "
+        "try increasing IBKR_TIMEOUT_SECONDS, reducing requested contracts, "
+        "or using delayed market data"
+    )
+
+
+def _market_data_error_note(error: tuple[int | None, int | None, str, object]) -> str:
+    req_id, error_code, error_message, contract = error
+    symbol = getattr(contract, "symbol", None) if contract is not None else None
+    parts = [f"IBKR market data error {error_code}"]
+    if req_id is not None:
+        parts.append(f"reqId {req_id}")
+    if symbol:
+        parts.append(f"symbol {symbol}")
+    return f"{', '.join(parts)}: {error_message}"
+
+
+def _is_market_data_subscription_error(
+    error: tuple[int | None, int | None, str, object]
+) -> bool:
+    return error[1] in _MARKET_DATA_SUBSCRIPTION_ERROR_CODES
+
+
 def _to_float(value: object) -> Optional[float]:
     if value is None:
         return None
@@ -412,16 +445,84 @@ class IBKRClient:
         normalized_contracts = [
             _normalize_market_data_contract(contract) for contract in qualified_contracts
         ]
-        tickers = list(
-            util.run(
-                self.ib.reqTickersAsync(
-                    *normalized_contracts,
-                    regulatorySnapshot=regulatory_snapshot,
-                ),
-                timeout=self.timeout_seconds,
+        captured_errors: list[tuple[int | None, int | None, str, object]] = []
+
+        def on_error(req_id, error_code, error_message, contract):
+            captured_errors.append((req_id, error_code, str(error_message), contract))
+
+        error_event = getattr(self.ib, "errorEvent", None)
+        if error_event is not None:
+            try:
+                error_event += on_error
+            except Exception:
+                error_event = None
+
+        def request_tickers() -> list[object]:
+            return list(
+                util.run(
+                    self.ib.reqTickersAsync(
+                        *normalized_contracts,
+                        regulatorySnapshot=regulatory_snapshot,
+                    ),
+                    timeout=self.timeout_seconds,
+                )
             )
-        )
-        return tickers, notes
+
+        try:
+            try:
+                tickers = request_tickers()
+            except TimeoutError as exc:
+                if any(_is_market_data_subscription_error(error) for error in captured_errors):
+                    notes.extend(
+                        _market_data_error_note(error)
+                        for error in captured_errors
+                        if _is_market_data_subscription_error(error)
+                    )
+                    notes.append(
+                        "live market data subscription unavailable; retrying with delayed market data"
+                    )
+                    try:
+                        self.ib.reqMarketDataType(_DELAYED_MARKET_DATA_TYPE)
+                        notes.append(
+                            f"market data type set to {_DELAYED_MARKET_DATA_TYPE} for delayed fallback"
+                        )
+                        tickers = request_tickers()
+                    except TimeoutError as delayed_exc:
+                        raise IBKRMarketDataTimeoutError(
+                            _market_data_timeout_message(self.timeout_seconds)
+                        ) from delayed_exc
+                    except Exception as fallback_exc:
+                        notes.append(
+                            f"delayed market data fallback failed: {fallback_exc}"
+                        )
+                        raise IBKRMarketDataTimeoutError(
+                            _market_data_timeout_message(self.timeout_seconds)
+                        ) from exc
+                    notes.append(
+                        "used delayed market data fallback; check IBKR market data subscriptions for live quotes"
+                    )
+                else:
+                    raise IBKRMarketDataTimeoutError(
+                        _market_data_timeout_message(self.timeout_seconds)
+                    ) from exc
+            else:
+                subscription_errors = [
+                    error
+                    for error in captured_errors
+                    if _is_market_data_subscription_error(error)
+                ]
+                if subscription_errors:
+                    notes.extend(_market_data_error_note(error) for error in subscription_errors)
+                    notes.append(
+                        "live market data subscription issue; use market_data_type=3 for delayed data or update IBKR market data subscriptions"
+                    )
+            return tickers, notes
+        finally:
+            if error_event is not None:
+                try:
+                    error_event -= on_error
+                except Exception:
+                    pass
 
     def get_historical_bars(
         self,
