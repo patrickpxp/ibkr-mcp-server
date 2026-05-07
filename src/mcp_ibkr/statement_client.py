@@ -249,7 +249,13 @@ class StatementClient:
             report = FlexReport(token=self.token, queryId=resolved_query_id)
         except FlexError as exc:
             message = str(exc)
-            retryable = "generation in progress" in message.lower() or "timeout" in message.lower()
+            normalized_message = message.lower()
+            retryable = (
+                "generation in progress" in normalized_message
+                or "timeout" in normalized_message
+                or "1001:" in normalized_message
+                or "statement could not be generated at this time" in normalized_message
+            )
             raise StatementRequestError(message, retryable) from exc
         except Exception as exc:
             raise StatementRequestError(str(exc), False) from exc

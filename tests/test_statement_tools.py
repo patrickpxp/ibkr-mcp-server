@@ -88,6 +88,24 @@ def test_statement_client_maps_flex_errors(monkeypatch):
         raise AssertionError("StatementRequestError expected")
 
 
+def test_statement_client_treats_ibkr_1001_as_retryable(monkeypatch):
+    class StubFlexReport:
+        def __init__(self, token=None, queryId=None, path=None):
+            raise FlexError("1001: Statement could not be generated at this time")
+
+    monkeypatch.setattr("mcp_ibkr.statement_client.FlexReport", StubFlexReport)
+
+    client = StatementClient(token="token-123", query_id="query-123")
+
+    try:
+        client.get_flex_statement(format="json")
+    except StatementRequestError as exc:
+        assert "1001" in str(exc)
+        assert exc.retryable is True
+    else:
+        raise AssertionError("StatementRequestError expected")
+
+
 def test_statement_client_extracts_cash_activity(monkeypatch):
     class StubFlexReport:
         def __init__(self, token=None, queryId=None, path=None):
