@@ -111,6 +111,8 @@ curl -s -X POST http://localhost:${MCP_PORT:-8000}/mcp \
 - `ibkr_get_historical_news`: Historical news headlines for a contract.
 - `ibkr_get_news_article`: News article body for a provider/article id.
 - `ibkr_get_fundamental_data`: Fundamental data report (JSON by default, XML optional).
+- `ibkr_get_wsh_metadata`: Wall Street Horizon metadata (available event types and filters).
+- `ibkr_get_wsh_earnings_calendar`: Dated Wall Street Horizon earnings events for a contract.
 - `ibkr_get_scanner_params`: Scanner parameters (JSON by default, XML optional).
 - `ibkr_get_flex_statement`: Fetch a Flex statement/report for a configured Flex query id.
 - `ibkr_get_cash_activity`: Extract normalized cash activity from a Flex statement.

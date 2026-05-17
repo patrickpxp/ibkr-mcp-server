@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import threading
@@ -11,7 +12,7 @@ import anyio
 import fastmcp
 from fastapi import FastAPI
 from fastmcp import FastMCP
-from ib_async.objects import ExecutionFilter
+from ib_async.objects import ExecutionFilter, WshEventData
 from ib_async.order import Order
 from ib_async import util
 import mcp.types as mcp_types
@@ -43,6 +44,8 @@ from .models import (
     GlobalCancelResponse,
     FundamentalDataResponse,
     HeadTimestampResponse,
+    WshEarningsCalendarResponse,
+    WshMetadataResponse,
     HistoricalBarModel,
     HistoricalBarsResponse,
     HistoricalNewsItemModel,
@@ -421,6 +424,18 @@ ReportType = Annotated[
 ResponseFormat = Annotated[
     str,
     Field(description="Output format: json (default) or xml."),
+]
+WshStartDate = Annotated[
+    str | None,
+    Field(description="Optional lower bound for WSH events in YYYYMMDD format."),
+]
+WshEndDate = Annotated[
+    str | None,
+    Field(description="Optional upper bound for WSH events in YYYYMMDD format."),
+]
+WshTotalLimit = Annotated[
+    int,
+    Field(description="Maximum number of WSH events to request."),
 ]
 QueryId = Annotated[
     str | None,
@@ -813,6 +828,94 @@ def _jsonify(value: object) -> object:
             if not str(key).startswith("_")
         }
     return str(value)
+
+
+def _parse_json_string(value: str | None, label: str, notes: list[str]) -> object | None:
+    if value is None:
+        return None
+    payload = value.strip()
+    if not payload:
+        return None
+    try:
+        return json.loads(payload)
+    except Exception as exc:
+        notes.append(f"{label} json parse failed; returning raw string ({exc})")
+        return value
+
+
+def _iter_nested_strings(value: object) -> Iterable[str]:
+    if isinstance(value, str):
+        yield value
+        return
+    if isinstance(value, dict):
+        for item in value.values():
+            yield from _iter_nested_strings(item)
+        return
+    if isinstance(value, (list, tuple, set)):
+        for item in value:
+            yield from _iter_nested_strings(item)
+
+
+def _extract_wsh_event_code(item: object) -> str | None:
+    if isinstance(item, str):
+        candidate = item.strip()
+        if candidate.lower().startswith("wsh"):
+            return candidate
+        return None
+    if isinstance(item, dict):
+        for key in ("code", "eventType", "event_type", "id", "value", "name"):
+            value = item.get(key)
+            if isinstance(value, str) and value.strip().lower().startswith("wsh"):
+                return value.strip()
+    return None
+
+
+def _detect_wsh_earnings_event_code(metadata: object) -> str | None:
+    if isinstance(metadata, str):
+        lowered_metadata = metadata.lower()
+        for candidate in ("wshe_ed", "wsh_ed"):
+            if candidate in lowered_metadata:
+                return candidate
+
+    normalized_strings = {item.strip().lower() for item in _iter_nested_strings(metadata)}
+    for candidate in ("wshe_ed", "wsh_ed"):
+        if candidate in normalized_strings:
+            return candidate
+
+    event_types = None
+    if isinstance(metadata, dict):
+        event_types = metadata.get("event_types") or metadata.get("eventTypes")
+    if isinstance(event_types, list):
+        for item in event_types:
+            strings = [text.strip().lower() for text in _iter_nested_strings(item)]
+            if any("earning" in text for text in strings):
+                code = _extract_wsh_event_code(item)
+                if code:
+                    return code
+    return None
+
+
+def _wsh_earnings_request(
+    con_id: int,
+    event_type_code: str,
+    start_date: str | None,
+    end_date: str | None,
+    total_limit: int,
+) -> WshEventData:
+    filter_payload = {
+        "country": "All",
+        "watchlist": [str(con_id)],
+        "limit_region": total_limit,
+        "limit": total_limit,
+        event_type_code: "true",
+    }
+    return WshEventData(
+        conId=con_id,
+        filter=json.dumps(filter_payload),
+        startDate=(start_date or "").strip(),
+        endDate=(end_date or "").strip(),
+        totalLimit=total_limit,
+    )
 
 
 def _trade_snapshot_model(trade: object | None) -> TradeSnapshotModel | None:
@@ -1856,6 +1959,112 @@ async def ibkr_get_fundamental_data(
         contract,
         reportType,
         format,
+    )
+
+
+def _ibkr_get_wsh_metadata_sync() -> dict:
+    def action(client: IBKRClient) -> dict:
+        notes: list[str] = []
+        metadata_raw = client.get_wsh_metadata()
+        metadata = _parse_json_string(metadata_raw, "wsh metadata", notes)
+        if not metadata_raw:
+            notes.append("wsh metadata unavailable")
+        response = WshMetadataResponse(metadata=metadata, notes=notes)
+        return response.model_dump()
+
+    return _run_with_client(action)
+
+
+@mcp.tool(
+    title="Get Wall Street Horizon Metadata",
+    description="Return WSH metadata describing available filters and event types.",
+    output_schema=_combined_output_schema(WshMetadataResponse),
+)
+async def ibkr_get_wsh_metadata() -> dict:
+    return await anyio.to_thread.run_sync(_ibkr_get_wsh_metadata_sync)
+
+
+def _ibkr_get_wsh_earnings_calendar_sync(
+    contract: dict,
+    startDate: str | None = None,
+    endDate: str | None = None,
+    totalLimit: int = 10,
+) -> dict:
+    def action(client: IBKRClient) -> dict:
+        notes: list[str] = []
+        if not isinstance(contract, dict):
+            return _error_response("INVALID_ARGUMENT", "contract must be an object", False)
+        try:
+            contract_obj = IBKRClient.contract_from_input(contract)
+        except ValueError as exc:
+            return _error_response("INVALID_ARGUMENT", str(exc), False)
+
+        qualified_contract, qualification_notes = client.qualify_contract(contract_obj)
+        notes.extend(qualification_notes)
+        if qualified_contract is None:
+            response = WshEarningsCalendarResponse(events=None, notes=notes)
+            return response.model_dump()
+
+        con_id = getattr(qualified_contract, "conId", None)
+        if con_id is None:
+            notes.append("qualified contract conId unavailable")
+            response = WshEarningsCalendarResponse(events=None, notes=notes)
+            return response.model_dump()
+
+        metadata_raw = client.get_wsh_metadata()
+        metadata = _parse_json_string(metadata_raw, "wsh metadata", notes)
+        if not metadata_raw:
+            notes.append("wsh metadata unavailable")
+
+        event_type_code = _detect_wsh_earnings_event_code(metadata)
+        if not event_type_code:
+            return _error_response(
+                "WSH_EARNINGS_EVENT_TYPE_UNAVAILABLE",
+                "unable to locate a WSH earnings event type code from metadata",
+                False,
+            )
+
+        request = _wsh_earnings_request(
+            con_id,
+            event_type_code,
+            startDate,
+            endDate,
+            totalLimit,
+        )
+        events_raw = client.get_wsh_event_data(request)
+        events = _parse_json_string(events_raw, "wsh event data", notes)
+        if not events_raw:
+            notes.append("wsh event data unavailable")
+
+        response = WshEarningsCalendarResponse(
+            conId=con_id,
+            eventTypeCode=event_type_code,
+            metadata=metadata,
+            events=events,
+            notes=notes,
+        )
+        return response.model_dump()
+
+    return _run_with_client(action)
+
+
+@mcp.tool(
+    title="Get WSH Earnings Calendar",
+    description="Return dated Wall Street Horizon earnings events for a contract.",
+    output_schema=_combined_output_schema(WshEarningsCalendarResponse),
+)
+async def ibkr_get_wsh_earnings_calendar(
+    contract: ContractInput,
+    startDate: WshStartDate = None,
+    endDate: WshEndDate = None,
+    totalLimit: WshTotalLimit = 10,
+) -> dict:
+    return await anyio.to_thread.run_sync(
+        _ibkr_get_wsh_earnings_calendar_sync,
+        contract,
+        startDate,
+        endDate,
+        totalLimit,
     )
 
 

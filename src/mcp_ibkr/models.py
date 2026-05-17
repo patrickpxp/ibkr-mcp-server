@@ -424,6 +424,23 @@ class FundamentalDataResponse(BaseModel):
     notes: list[str]
 
 
+class WshMetadataResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    metadata: Optional[Any] = None
+    notes: list[str]
+
+
+class WshEarningsCalendarResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    conId: Optional[int] = None
+    eventTypeCode: Optional[str] = None
+    metadata: Optional[Any] = None
+    events: Optional[Any] = None
+    notes: list[str]
+
+
 class ScannerParamsResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
